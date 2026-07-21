@@ -17,8 +17,9 @@ namespace UniLFS.Editor
     ///
     /// Entries are added when we have proof — a blob we just uploaded, one the
     /// remote reported as already present during Push, one we just downloaded
-    /// during Pull, or one confirmed by Verify. Safe to delete: files fall back
-    /// to "not pushed" until the next Push or Pull confirms them again.
+    /// during Pull, or one confirmed by Verify — and retracted when a check
+    /// answers that the blob is not there after all. Safe to delete: files fall
+    /// back to "not pushed" until the next Push or Pull confirms them again.
     ///
     /// The file name carries a provider fingerprint, so repointing the project
     /// at a different bucket does not inherit the old bucket's confirmations
@@ -98,6 +99,21 @@ namespace UniLFS.Editor
             lock (_lock)
                 foreach (var h in hashes)
                     if (!string.IsNullOrEmpty(h) && _blobs.Add(h)) _dirty = true;
+        }
+
+        /// <summary>
+        /// Retracts a confirmation, for when storage answers that it does not
+        /// have the blob after all (someone emptied the bucket, or the blob only
+        /// ever reached a different one). Call this only on a definitive "no" —
+        /// a check that failed with a network error proves nothing, and
+        /// forgetting on those would flip files to "not pushed" every time the
+        /// connection hiccups.
+        /// </summary>
+        public void Remove(string hash)
+        {
+            if (string.IsNullOrEmpty(hash)) return;
+            lock (_lock)
+                if (_blobs.Remove(hash)) _dirty = true;
         }
 
         /// <summary>

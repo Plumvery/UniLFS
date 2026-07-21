@@ -128,7 +128,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 | ボタン | 動作 |
 |--------|------|
-| Refresh | 全追跡ファイルを再チェック（mtime+sizeでハッシュをキャッシュするので軽い） |
+| Refresh | 全追跡ファイルを再チェックし、blobがストレージに実在するかをストレージ側に問い合わせ |
 | Push | 新規/変更ブロブをアップロードし、マニフェストを更新 |
 | Pull | ローカルに無いファイルをダウンロード |
 | Restore Modified | ローカル変更をマニフェストの版で上書き（確認ダイアログあり） |
@@ -136,7 +136,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 状態表示: **up to date**（マニフェストと一致し、ストレージ上の blob も確認済み）/ **not pushed**（マニフェストとは一致するが、このマシンからのアップロードが確認できていない。Track しただけで未 Push の場合など）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
 
-「確認済み」かどうかは Push / Pull / Verify が blob の存在を証明したときに `Library/UniLFS/` へ記録されるため、一覧表示にネットワーク通信は発生しません。`Library/` を消した場合は次の Push / Pull で再確認されるまで **not pushed** 表示に戻ります。
+「確認済み」かどうかは Push / Pull / Verify が blob の存在を証明したときに `Library/UniLFS/` へ記録されるため、一覧の描画自体にネットワーク通信は発生しません。その証明を取り直すのが **Refresh** ボタンで、マニフェスト上の全 blob をストレージに問い合わせます。clone 直後（まだ何も確認していない状態）で全ファイルが not pushed 表示になるのが解消されるのも、バケットから消された blob が **not pushed** に戻るのもこの経路です。ウィンドウを開いたときと Push / Pull 直後の再チェックはローカルのみで、通信は発生しません。
 
 ## 🔄 自動同期 — gitフック不要
 

@@ -27,6 +27,8 @@ namespace UniLFS.Editor
         CancellationTokenSource _cts;
         /// <summary>A refresh that lost the race for the operation lock, retried once it frees.</summary>
         bool _refreshPending;
+        /// <summary>Whether that queued refresh was the toolbar one, which also verifies against storage.</summary>
+        bool _refreshPendingVerify;
 
         // Provider config is read from disk, so it is cached rather than
         // reloaded every repaint.
@@ -68,7 +70,13 @@ namespace UniLFS.Editor
             if (!_busy)
             {
                 if (UniLfsOperationLock.IsBusy) Repaint();
-                else if (_refreshPending) { _refreshPending = false; RefreshStatus(); }
+                else if (_refreshPending)
+                {
+                    _refreshPending = false;
+                    bool verify = _refreshPendingVerify;
+                    _refreshPendingVerify = false;
+                    RefreshStatus(verify);
+                }
             }
         }
 
@@ -77,8 +85,8 @@ namespace UniLFS.Editor
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             using (new EditorGUI.DisabledScope(_busy || UniLfsOperationLock.IsBusy))
             {
-                if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(60)))
-                    RefreshStatus();
+                if (GUILayout.Button(new GUIContent("Refresh", "Re-check tracked files, and ask storage whether it really has the manifest's blobs"), EditorStyles.toolbarButton, GUILayout.Width(60)))
+                    RefreshStatus(true);
                 if (GUILayout.Button(new GUIContent("Push", "Upload changed/new blobs and update the manifest"), EditorStyles.toolbarButton, GUILayout.Width(50)))
                     RunOperation("Push", (p, ct) => UniLfsCore.PushAsync(p, ct), false);
                 if (GUILayout.Button(new GUIContent("Pull", "Download files that are missing locally"), EditorStyles.toolbarButton, GUILayout.Width(50)))
@@ -91,10 +99,12 @@ namespace UniLFS.Editor
                         RunOperation("Restore", (p, ct) => UniLfsCore.PullAsync(true, p, ct), true);
                 }
                 GUILayout.Space(12);
+                // Local-only refreshes: Track/Untrack change the manifest, not
+                // what storage holds.
                 if (GUILayout.Button("Track Selected", EditorStyles.toolbarButton, GUILayout.Width(95)))
-                    UniLfsAssetMenu.TrackSelection(RefreshStatus);
+                    UniLfsAssetMenu.TrackSelection(() => RefreshStatus());
                 if (GUILayout.Button("Untrack Selected", EditorStyles.toolbarButton, GUILayout.Width(105)))
-                    UniLfsAssetMenu.UntrackSelection(RefreshStatus);
+                    UniLfsAssetMenu.UntrackSelection(() => RefreshStatus());
             }
             GUILayout.FlexibleSpace();
             if (_busy && _cts != null)
@@ -285,7 +295,12 @@ namespace UniLFS.Editor
             }
         }
 
-        async void RefreshStatus()
+        /// <param name="verifyRemote">
+        /// Also ask storage whether it has the manifest's blobs. Pressed
+        /// Refresh does; the automatic refreshes (window opened, operation
+        /// finished) stay local-only so they cost no requests.
+        /// </param>
+        async void RefreshStatus(bool verifyRemote = false)
         {
             if (_busy) return;
             if (UniLfsOperationLock.IsBusy)
@@ -294,15 +309,24 @@ namespace UniLFS.Editor
                 // refresh instead of failing, or the list would sit stale until
                 // the user pressed Refresh themselves.
                 _refreshPending = true;
+                _refreshPendingVerify |= verifyRemote;
                 return;
             }
+            // Nothing to ask storage with: the check would only add one failure
+            // per blob under the setup banner that is already on screen.
+            bool verify = verifyRemote && _missingConfig.Count == 0;
             _busy = true;
-            _busyLabel = "Refreshing";
+            _busyLabel = verify ? "Verifying" : "Refreshing";
             _progress = default(UniLfsProgress);
             _cts = new CancellationTokenSource();
             try
             {
-                _statuses = await UniLfsCore.StatusAsync(UiProgress(), _cts.Token);
+                var report = await UniLfsCore.StatusAsync(verify, UiProgress(), _cts.Token);
+                _statuses = report.Files;
+                if (verifyRemote && !verify)
+                    _lastMessage = "Refreshed local state only - checking storage needs " + UniLfsProviderStatus.Describe(_missingConfig) + ".";
+                else if (report.Verified)
+                    ReportVerify(report);
             }
             catch (OperationCanceledException)
             {
@@ -397,6 +421,30 @@ namespace UniLFS.Editor
                 if (progressId >= 0) Progress.Report(progressId, p.Fraction, p.Label);
                 Repaint();
             });
+        }
+
+        /// <summary>
+        /// Reports what storage answered. The file list already shows the
+        /// outcome per file, so the footer only carries the counts — but a blob
+        /// the manifest references and storage does not have is worth a Console
+        /// warning with the names, since it means a commit is about to reference
+        /// something nobody can pull.
+        /// </summary>
+        void ReportVerify(UniLfsStatusReport report)
+        {
+            var parts = new List<string>();
+            if (report.Confirmed > 0) parts.Add(report.Confirmed + " blob(s) confirmed in storage");
+            if (report.MissingRemote.Count > 0) parts.Add(report.MissingRemote.Count + " file(s) missing from storage (run Push)");
+            if (report.Failures.Count > 0) parts.Add(report.Failures.Count + " blob(s) could not be checked");
+            if (parts.Count == 0) parts.Add("nothing to check");
+            _lastMessage = "Verify: " + string.Join(", ", parts) + ".";
+
+            if (report.MissingRemote.Count > 0)
+                Debug.LogWarning("UniLFS Verify: storage does not have the blob for these tracked files; run Push before committing the manifest.\n- "
+                    + string.Join("\n- ", report.MissingRemote));
+            if (report.Failures.Count > 0)
+                Debug.LogWarning("UniLFS Verify: some blobs could not be checked, so their state is unchanged.\n- "
+                    + string.Join("\n- ", report.Failures));
         }
 
         static string Summarize(string label, UniLfsOpResult r)

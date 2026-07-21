@@ -46,6 +46,28 @@ namespace UniLFS.Editor.Tests
             Assert.IsFalse(reloaded.Contains(HashB));
         }
 
+        /// <summary>
+        /// Confirmations have to be retractable, or a blob deleted from the
+        /// bucket would keep reading as "up to date" on every machine that once
+        /// saw it there — exactly the case Refresh's remote check exists to
+        /// catch.
+        /// </summary>
+        [Test]
+        public void Remove_RetractsAConfirmation()
+        {
+            var cache = new UniLfsRemoteBlobCache(_path);
+            cache.AddRange(new[] { HashA, HashB });
+            cache.Save();
+
+            var reopened = new UniLfsRemoteBlobCache(_path);
+            reopened.Remove(HashA);
+            reopened.Save();
+
+            var reloaded = new UniLfsRemoteBlobCache(_path);
+            Assert.IsFalse(reloaded.Contains(HashA), "a retracted confirmation must not come back after a reload");
+            Assert.IsTrue(reloaded.Contains(HashB), "retracting one blob must not touch the others");
+        }
+
         [Test]
         public void RetainOnly_DropsBlobsTheManifestNoLongerReferences()
         {

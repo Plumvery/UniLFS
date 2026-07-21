@@ -5,6 +5,19 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-22
+
+### Changed
+
+- **Refresh** in `Window > UniLFS` now also verifies the manifest against remote storage, instead of trusting only what this machine happened to record. The **not pushed** state added in 0.3.0 was built from local confirmations, so it answered "did *I* ever upload this?" rather than "is it in storage?": a fresh clone had confirmed nothing and showed every file as not pushed, and deleting `Library/` had the same effect. One existence request per distinct blob now settles it, and the check runs under the same lock as the rest, so it cannot overlap a Push.
+- The verification is deliberately limited to the Refresh button. Opening the window, and the status re-check that follows a Push or Pull, stay local-only and cost no requests — Push and Pull already know what they moved.
+- `UniLfsCore.StatusAsync` gained a `bool verifyRemote` overload returning a `UniLfsStatusReport` (file list plus what storage answered). The existing signature is unchanged, so `UniLfsCli.Status` and Auto Pull/Push keep their local-only behaviour.
+
+### Fixed
+
+- A blob deleted from storage no longer stays "up to date" forever. Confirmations were only ever added, so once a machine had seen a blob it kept believing it — a bucket emptied by hand, or a file that only ever reached a different bucket, still showed green. A check that gets a definitive "not there" now retracts the confirmation, while a check that *fails* (network, credentials) leaves it alone, since no answer is not the same as "absent".
+- `UniLfsCore.VerifyRemoteAsync` takes the operation lock like every other operation. It rewrites the confirmation record, so a Verify overlapping a Push could previously undo part of what the Push had just recorded.
+
 ## [0.3.0] - 2026-07-22
 
 ### Added

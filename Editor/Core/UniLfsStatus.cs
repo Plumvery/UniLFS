@@ -28,6 +28,29 @@ namespace UniLFS.Editor
     }
 
     /// <summary>
+    /// The outcome of a status check. <see cref="Files"/> is the list a UI
+    /// draws; the other fields describe the optional remote check that ran
+    /// first, and stay empty when it did not (<see cref="Verified"/> is false).
+    /// </summary>
+    public class UniLfsStatusReport
+    {
+        public List<UniLfsStatusEntry> Files = new List<UniLfsStatusEntry>();
+        /// <summary>True when remote storage was actually asked about the manifest's blobs.</summary>
+        public bool Verified;
+        /// <summary>Distinct blobs storage confirmed it has.</summary>
+        public int Confirmed;
+        /// <summary>Tracked files whose blob storage answered for, and does not have.</summary>
+        public List<string> MissingRemote = new List<string>();
+        /// <summary>
+        /// Why some blobs could not be checked (network or credential
+        /// failures). Distinct from <see cref="MissingRemote"/>: no answer is
+        /// not the same as "absent", so those keep whatever confirmation they
+        /// already had.
+        /// </summary>
+        public List<string> Failures = new List<string>();
+    }
+
+    /// <summary>
     /// A snapshot of an operation's progress, produced by
     /// <see cref="UniLfsProgressReporter"/>. All fields describe the same
     /// instant, so a UI never mixes numbers from two different workers.

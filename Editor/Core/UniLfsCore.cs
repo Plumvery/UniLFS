@@ -20,6 +20,7 @@ namespace UniLFS.Editor
         const float PushHashSpan = 0.25f;
         const float PushCheckSpan = 0.10f;
         const float PullStatusSpan = 0.20f;
+        const float StatusVerifySpan = 0.40f;
 
         public static IUniLfsStorageProvider CreateProvider(UniLfsSettings settings, UniLfsUserSettings user)
         {
@@ -42,21 +43,67 @@ namespace UniLFS.Editor
 
         public static async Task<List<UniLfsStatusEntry>> StatusAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
-            using (UniLfsOperationLock.Acquire("Status"))
-                return await StatusUnlockedAsync(progress, ct).ConfigureAwait(false);
+            var report = await StatusAsync(false, progress, ct).ConfigureAwait(false);
+            return report.Files;
         }
 
-        static async Task<List<UniLfsStatusEntry>> StatusUnlockedAsync(IProgress<UniLfsProgress> progress, CancellationToken ct)
+        /// <summary>
+        /// Status, optionally preceded by asking remote storage whether it
+        /// really holds the blobs the manifest references.
+        ///
+        /// Without that check the "confirmed in storage" flag is only as good as
+        /// this machine's own record: a fresh clone has uploaded nothing, so
+        /// every file reads as "not pushed", and a blob deleted from the bucket
+        /// keeps reading as "up to date" forever. The check costs one existence
+        /// request per distinct blob, which is why the caller opts into it —
+        /// pressing Refresh does, the background status checks do not.
+        /// </summary>
+        public static async Task<UniLfsStatusReport> StatusAsync(bool verifyRemote, IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire(verifyRemote ? "Verify" : "Status"))
+                return await StatusUnlockedAsync(verifyRemote, progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsStatusReport> StatusUnlockedAsync(bool verifyRemote, IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
+            var settings = UniLfsSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
-            var remote = UniLfsRemoteBlobCache.Load(UniLfsSettings.Load());
+            var remote = UniLfsRemoteBlobCache.Load(settings);
             var reporter = new UniLfsProgressReporter(progress);
+            var report = new UniLfsStatusReport();
             try
             {
-                var result = await StatusInternalAsync(manifest, cache, remote, reporter, 0f, 1f, ct).ConfigureAwait(false);
+                float start = 0f, span = 1f;
+                if (verifyRemote && manifest.files.Count > 0)
+                {
+                    start = StatusVerifySpan;
+                    span = 1f - StatusVerifySpan;
+                    var pathsByHash = PathsByHash(manifest);
+                    try
+                    {
+                        var check = await CheckRemoteAsync(pathsByHash, settings, UniLfsUserSettings.Load(), remote,
+                            reporter, 0f, StatusVerifySpan, ct).ConfigureAwait(false);
+                        report.Verified = true;
+                        report.Confirmed = check.Present.Count;
+                        foreach (var h in check.Missing) report.MissingRemote.AddRange(pathsByHash[h]);
+                        report.Failures.AddRange(check.Failures);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        // A check that could not run at all (provider
+                        // misconfigured, credentials rejected) must not cost the
+                        // caller the local half of the answer.
+                        report.Failures.Add(e.Message);
+                    }
+                }
+                report.Files = await StatusInternalAsync(manifest, cache, remote, reporter, start, span, ct).ConfigureAwait(false);
                 reporter.Finish();
-                return result;
+                return report;
             }
             finally
             {
@@ -452,28 +499,64 @@ namespace UniLFS.Editor
         /// </summary>
         public static async Task<UniLfsOpResult> VerifyRemoteAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire("Verify"))
+                return await VerifyRemoteUnlockedAsync(progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsOpResult> VerifyRemoteUnlockedAsync(IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
             var settings = UniLfsSettings.Load();
-            var user = UniLfsUserSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var result = new UniLfsOpResult();
             if (manifest.files.Count == 0) return result;
 
-            var pathsByHash = new Dictionary<string, List<string>>();
-            foreach (var f in manifest.files)
-            {
-                List<string> list;
-                if (!pathsByHash.TryGetValue(f.hash, out list))
-                    pathsByHash[f.hash] = list = new List<string>();
-                list.Add(f.path);
-            }
-
+            var pathsByHash = PathsByHash(manifest);
             var reporter = new UniLfsProgressReporter(progress);
             var remote = UniLfsRemoteBlobCache.Load(settings);
+            try
+            {
+                var check = await CheckRemoteAsync(pathsByHash, settings, UniLfsUserSettings.Load(), remote,
+                    reporter, 0f, 1f, ct).ConfigureAwait(false);
+                result.Skipped = check.Present.Count;
+                foreach (var h in check.Missing)
+                    result.Errors.Add("missing on remote: " + string.Join(", ", pathsByHash[h]) + " (" + h.Substring(0, 8) + "...)");
+                result.Errors.AddRange(check.Failures);
+                reporter.Finish();
+            }
+            finally
+            {
+                remote.Save();
+            }
+            return result;
+        }
+
+        /// <summary>What storage answered about a set of blob hashes.</summary>
+        class RemoteCheck
+        {
+            public readonly List<string> Present = new List<string>();
+            /// <summary>Hashes storage answered for and does not have.</summary>
+            public readonly List<string> Missing = new List<string>();
+            /// <summary>One message per hash we could not get an answer for — "unknown", not "absent".</summary>
+            public readonly List<string> Failures = new List<string>();
+        }
+
+        /// <summary>
+        /// Asks storage which of the given blobs it has, without downloading
+        /// anything, and records the answers both ways: a blob storage has is
+        /// proof, a blob it denies retracts an older confirmation. Checks that
+        /// fail outright prove nothing, so they leave the record alone and are
+        /// reported separately.
+        /// </summary>
+        static async Task<RemoteCheck> CheckRemoteAsync(Dictionary<string, List<string>> pathsByHash, UniLfsSettings settings, UniLfsUserSettings user, UniLfsRemoteBlobCache remote, UniLfsProgressReporter reporter, float start, float span, CancellationToken ct)
+        {
+            var check = new RemoteCheck();
+            var hashes = pathsByHash.Keys.ToList();
+            reporter.BeginPhase("Verifying remote", start, span, hashes.Count, 0);
+            if (hashes.Count == 0) return check;
+
             using (var provider = CreateProvider(settings, user))
             {
-                var hashes = pathsByHash.Keys.ToList();
                 var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
-                reporter.BeginPhase("Verifying remote", 0f, 1f, hashes.Count, 0);
                 var tasks = hashes.Select(async h =>
                 {
                     await semaphore.WaitAsync(ct).ConfigureAwait(false);
@@ -484,11 +567,13 @@ namespace UniLFS.Editor
                             if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
                             {
                                 remote.Add(h);
-                                Interlocked.Increment(ref result.Skipped);
+                                lock (check) check.Present.Add(h);
                             }
                             else
-                                lock (result.Errors)
-                                    result.Errors.Add("missing on remote: " + string.Join(", ", pathsByHash[h]) + " (" + h.Substring(0, 8) + "...)");
+                            {
+                                remote.Remove(h);
+                                lock (check) check.Missing.Add(h);
+                            }
                         }
                         catch (OperationCanceledException)
                         {
@@ -496,7 +581,7 @@ namespace UniLFS.Editor
                         }
                         catch (Exception e)
                         {
-                            lock (result.Errors) result.Errors.Add("check " + string.Join(", ", pathsByHash[h]) + ": " + e.Message);
+                            lock (check) check.Failures.Add("check " + string.Join(", ", pathsByHash[h]) + ": " + e.Message);
                         }
                         finally
                         {
@@ -505,10 +590,26 @@ namespace UniLFS.Editor
                     }
                 }).ToList();
                 await Task.WhenAll(tasks).ConfigureAwait(false);
-                reporter.Finish();
-                remote.Save();
             }
-            return result;
+            return check;
+        }
+
+        /// <summary>
+        /// Groups the manifest by blob, so duplicated content costs one
+        /// existence check rather than one per file, while a report can still
+        /// name every file that check speaks for.
+        /// </summary>
+        static Dictionary<string, List<string>> PathsByHash(UniLfsManifest manifest)
+        {
+            var map = new Dictionary<string, List<string>>();
+            foreach (var f in manifest.files)
+            {
+                List<string> list;
+                if (!map.TryGetValue(f.hash, out list))
+                    map[f.hash] = list = new List<string>();
+                list.Add(f.path);
+            }
+            return map;
         }
 
         public static string GitRemoveHint(IEnumerable<string> newlyTrackedPaths)

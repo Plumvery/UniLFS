@@ -1,19 +1,53 @@
-# UniLFS
+<div align="center">
 
-Store large Unity assets in **your own external storage** — Cloudflare R2, any S3-compatible service, or Google Drive — instead of Git LFS.
+<img src="Documentation~/images/hero.png" width="830" alt="UniLFS — Big assets. Your storage. Tiny git.">
 
-日本語版は [README_JA.md](README_JA.md) をどうぞ。
+**Store large Unity assets in your own external storage —<br>Cloudflare R2 / any S3-compatible service / Google Drive — instead of Git LFS.**
+
+[![Latest release](https://img.shields.io/github/v/release/Plumvery/UniLFS?label=release&color=ff8a5c)](https://github.com/Plumvery/UniLFS/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3da638)](LICENSE.md)
+[![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-222c37?logo=unity&logoColor=white)](#-install)
+
+[**日本語**](README_JA.md) · [Install](#-install) · [Quick start](#-quick-start-cloudflare-r2) · [Auto sync](#-auto-sync--no-git-hooks-needed) · [CI](Documentation~/ci.md)
+
+</div>
+
+---
 
 Git LFS free tiers are tiny (GitHub: 1 GB storage / 1 GB bandwidth per month) and Unity projects blow through them fast. UniLFS keeps your big binaries out of git entirely: git only stores a small manifest with content hashes, and the real files live in storage you control — for example R2's free tier gives you 10 GB with **zero egress fees**.
+
+## ✨ Features
 
 - **No git-lfs, no CLI tools, no server** — a pure Unity editor package
 - **Bring your own storage** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi (S3 API), or Google Drive
 - **`.meta` files stay in git** — GUIDs and references never break
 - **Content-addressed & verified** — blobs are stored by SHA-256 and every download is hash-checked
+- **Auto sync** — missing files are pulled and local changes are pushed without git hooks
 - **Merge-friendly manifest** — one line per file, sorted, so PRs stay reviewable
-- **CI ready** — batch mode entry points + environment variable credentials
+- **CI ready** — batch mode entry points, env-var credentials, and a Unity-free verify gate
 
-## How it works
+## 🧭 How it works
+
+```mermaid
+flowchart LR
+    subgraph dev["your machine"]
+        A["Assets/Big/dragon.fbx<br/>1.2 GB &nbsp;·&nbsp; gitignored"]
+        M["unilfs.manifest.json<br/>path + SHA-256 &nbsp;·&nbsp; a few KB"]
+    end
+    S[("your storage<br/>R2 · S3 · Google Drive")]
+    G[("git remote")]
+    A <-- "Push / Pull (auto)" --> S
+    M <-- "git push / pull" --> G
+```
+
+1. **Track** — you pick large files; UniLFS records their SHA-256 in `unilfs.manifest.json` and adds them to a managed `.gitignore` block.
+2. **Push** — blobs missing from the remote are uploaded (`objects/<aa>/<sha256>`, deduplicated). The manifest only records a new hash after its blob is confirmed uploaded, so a committed manifest never points at a missing blob.
+3. **Pull** — teammates (or CI) download whatever the manifest lists that is missing locally. Downloads are verified against the manifest hash before touching your project.
+
+Editing a tracked file is just: edit → **Push** → commit the manifest change. Switching branches: checkout → **Pull**. Both directions can happen [automatically](#-auto-sync--no-git-hooks-needed).
+
+<details>
+<summary>What lands where on disk</summary>
 
 ```
 your-project/
@@ -28,39 +62,27 @@ remote storage:
 └── unilfs/objects/ab/abcdef1234...   ← blobs named by SHA-256
 ```
 
-1. **Track** — you pick large files; UniLFS records their SHA-256 in `unilfs.manifest.json` and adds them to a managed `.gitignore` block.
-2. **Push** — blobs missing from the remote are uploaded. The manifest only records a new hash after its blob is confirmed uploaded, so a committed manifest never points at a missing blob.
-3. **Pull** — teammates (or CI) download whatever the manifest lists that is missing locally. Downloads are verified against the manifest hash before touching your project.
+</details>
 
-Editing a tracked file is just: edit → **Push** → commit the manifest change. Switching branches: checkout → **Pull**.
+## 📦 Install
 
-## Requirements
-
-- Unity **2021.3** or newer
-- A git client (UPM installs the package via git)
-- One of: an S3-compatible bucket (Cloudflare R2 recommended) or a Google account
-
-## Install
-
-**Package Manager UI**: `Window > Package Manager` → `+` → *Add package from git URL*:
+Requires **Unity 2021.3+** and a git client. In `Window > Package Manager` → `+` → *Add package from git URL*:
 
 ```
 https://github.com/Plumvery/UniLFS.git
 ```
 
-**Or `Packages/manifest.json`**:
+Or in `Packages/manifest.json` (pin a version with a tag):
 
 ```json
 {
   "dependencies": {
-    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git"
+    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git#v0.2.0"
   }
 }
 ```
 
-Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.2.0`
-
-## Quick start (Cloudflare R2)
+## 🚀 Quick start (Cloudflare R2)
 
 1. Create an R2 bucket and an API token with *Object Read & Write* — [step-by-step guide](Documentation~/setup-r2.md).
 2. In Unity, open `Edit > Project Settings > UniLFS`:
@@ -74,11 +96,11 @@ Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.2.0`
 6. Commit `unilfs.manifest.json`, `.gitignore`, `ProjectSettings/UniLFSSettings.json` and the assets' `.meta` files.
    If the files were already committed to git before, run the `git rm --cached` commands UniLFS prints to the Console.
 
-Teammates then: clone → enter their credentials in Project Settings → open the project. UniLFS notices the missing files and offers to pull them (see [Auto sync](#auto-sync--no-git-hooks-needed)); `Window > UniLFS` → **Pull** works manually too.
+Teammates then: clone → enter their credentials in Project Settings → open the project. UniLFS notices the missing files and offers to pull them; `Window > UniLFS` → **Pull** works manually too.
 
 Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md).
 
-## The UniLFS window (`Window > UniLFS`)
+## 🖥️ The UniLFS window (`Window > UniLFS`)
 
 | Button | What it does |
 |--------|--------------|
@@ -90,7 +112,7 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 
 File states: **up to date** (matches manifest) / **modified** (local edit not pushed) / **missing** (needs Pull).
 
-## Auto sync — no git hooks needed
+## 🔄 Auto sync — no git hooks needed
 
 Because the real bytes only exist on the machines that edit them, syncing has to start client-side (git-lfs works the same way). UniLFS automates both directions from inside the editor, and gives CI a cheap way to catch anything that slips through:
 
@@ -102,7 +124,7 @@ Because the real bytes only exist on the machines that edit them, syncing has to
 
 Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state is handled at most once per editor session, so declining a dialog won't nag you on every focus change.
 
-## Configuration & credentials
+## 🔐 Configuration & credentials
 
 | File | Committed? | Contents |
 |------|-----------|----------|
@@ -116,36 +138,36 @@ Environment variables override everything (useful for CI):
 
 Credentials are stored in plain text in `UserSettings/UniLFS.json` (like `~/.aws/credentials`). UniLFS force-includes that file in its `.gitignore` block, but treat the file like any other secret.
 
-## CI
+## 🤖 CI
 
 ```sh
 Unity -batchmode -nographics -quit -projectPath . \
   -executeMethod UniLFS.Editor.UniLfsCli.Pull
 ```
 
-`Pull` / `Push` / `Status` are available; errors make the process exit non-zero. Full examples (GitHub Actions): [Documentation~/ci.md](Documentation~/ci.md).
+`Pull` / `Push` / `Verify` / `Status` are available; errors make the process exit non-zero. For the Unity-free verify gate and full GitHub Actions examples, see [Documentation~/ci.md](Documentation~/ci.md).
 
-## Merge behavior
+## 🔀 Merge behavior
 
 The manifest is sorted with one line per file, so two people tracking *different* files merge cleanly. If two people change the *same* file you get a one-line conflict — pick the hash you want and run **Pull** (use **Restore Modified** to overwrite your local copy). Blobs for both versions exist remotely, so nothing is lost either way.
 
-## Limitations (v0.1)
+## ⚠️ Limitations (v0.2)
 
 - No file locking (as with plain git — coordinate who edits shared binaries)
-- No garbage collection of old blobs yet (storage is cheap; `unilfs prune` is on the roadmap)
+- No garbage collection of old blobs yet (storage is cheap; `prune` is on the roadmap)
 - Single-request uploads: ~5 GB per-object limit on R2/S3
 - Google Drive is best for solo/small-team use — see the rate-limit and quota notes in its guide
 - Editor-only: files must be pulled before building (that is what the CI entry point is for)
 
-## Roadmap
+## 🗺️ Roadmap
 
 - Blob pruning / GC
 - Track-by-pattern (e.g. auto-track everything under a folder)
 - Multipart uploads
 - OpenUPM listing
 
-PRs and issues welcome.
+PRs and issues welcome!
 
-## License
+## 📄 License
 
-[MIT](LICENSE.md)
+[MIT](LICENSE.md) © [Plumvery](https://github.com/Plumvery)

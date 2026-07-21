@@ -1,19 +1,53 @@
-# UniLFS
+<div align="center">
 
-Unityの大容量アセットを、Git LFSの代わりに**自分の外部ストレージ**（Cloudflare R2 / S3互換サービス / Google Drive）に保存するエディタ拡張です。
+<img src="Documentation~/images/hero.png" width="830" alt="UniLFS — Big assets. Your storage. Tiny git.">
 
-English version: [README.md](README.md)
+**Unityの大容量アセットを、Git LFSの代わりに自分の外部ストレージへ<br>（Cloudflare R2 / S3互換サービス / Google Drive）**
+
+[![Latest release](https://img.shields.io/github/v/release/Plumvery/UniLFS?label=release&color=ff8a5c)](https://github.com/Plumvery/UniLFS/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3da638)](LICENSE.md)
+[![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-222c37?logo=unity&logoColor=white)](#-インストール)
+
+[**English**](README.md) · [インストール](#-インストール) · [クイックスタート](#-クイックスタートcloudflare-r2) · [自動同期](#-自動同期--gitフック不要) · [CI](Documentation~/ci.md)
+
+</div>
+
+---
 
 Git LFSの無料枠は小さく（GitHubはストレージ1GB・帯域1GB/月）、Unityプロジェクトではすぐ溢れます。UniLFSは大きいバイナリをgitから完全に切り離します。gitにはコンテンツハッシュを記録した小さなマニフェストだけをコミットし、実ファイルは自分で管理するストレージに置きます。たとえばR2の無料枠は10GB、**下り転送は無料**です。
+
+## ✨ 特徴
 
 - **git-lfs不要・CLIツール不要・サーバー不要** — 純粋なUnityエディタパッケージ
 - **ストレージは自分で選ぶ** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi（S3 API）、または Google Drive
 - **`.meta`はgitに残る** — GUIDや参照が壊れない
 - **コンテンツアドレス方式＋検証付き** — ブロブはSHA-256名で保存し、ダウンロードは必ずハッシュ検証
+- **自動同期** — gitフック無しで、欠けたファイルのPullもローカル変更のPushも自動
 - **マージしやすいマニフェスト** — 1ファイル1行・ソート済みなのでPRがレビューしやすい
-- **CI対応** — バッチモード用エントリポイントと環境変数での認証
+- **CI対応** — バッチモード用エントリポイント、環境変数での認証、Unity不要の検証ゲート
 
-## 仕組み
+## 🧭 仕組み
+
+```mermaid
+flowchart LR
+    subgraph dev["あなたのマシン"]
+        A["Assets/Big/dragon.fbx<br/>1.2 GB &nbsp;·&nbsp; gitignore対象"]
+        M["unilfs.manifest.json<br/>パス + SHA-256 &nbsp;·&nbsp; 数KB"]
+    end
+    S[("自分のストレージ<br/>R2 · S3 · Google Drive")]
+    G[("gitリモート")]
+    A <-- "Push / Pull（自動）" --> S
+    M <-- "git push / pull" --> G
+```
+
+1. **Track** — 大きいファイルを選ぶと、UniLFSがSHA-256を`unilfs.manifest.json`に記録し、`.gitignore`の管理ブロックへ追加します。
+2. **Push** — リモートに無いブロブだけをアップロードします（`objects/<aa>/<sha256>`、重複排除）。アップロード確認後にのみマニフェストへ新ハッシュを書くので、コミットされたマニフェストが「存在しないブロブ」を指すことはありません。
+3. **Pull** — チームメイト（やCI）は、マニフェストにあってローカルに無いファイルをダウンロードします。プロジェクトに書き込む前に必ずハッシュ検証します。
+
+追跡中ファイルの更新は「編集 → **Push** → マニフェストの差分をコミット」。ブランチ切り替えは「checkout → **Pull**」だけ。どちらも[自動化](#-自動同期--gitフック不要)できます。
+
+<details>
+<summary>ディスク上の配置</summary>
 
 ```
 your-project/
@@ -28,39 +62,27 @@ your-project/
 └── unilfs/objects/ab/abcdef1234...   ← SHA-256名のブロブ
 ```
 
-1. **Track** — 大きいファイルを選ぶと、UniLFSがSHA-256を`unilfs.manifest.json`に記録し、`.gitignore`の管理ブロックへ追加します。
-2. **Push** — リモートに無いブロブだけをアップロードします。ブロブのアップロード確認が取れてからマニフェストへ新ハッシュを書くので、コミットされたマニフェストが「存在しないブロブ」を指すことはありません。
-3. **Pull** — チームメイト（やCI）は、マニフェストにあってローカルに無いファイルをダウンロードします。プロジェクトに書き込む前に必ずハッシュ検証します。
+</details>
 
-追跡中ファイルの更新は「編集 → **Push** → マニフェストの差分をコミット」。ブランチ切り替えは「checkout → **Pull**」だけです。
+## 📦 インストール
 
-## 動作要件
-
-- Unity **2021.3** 以降
-- gitクライアント（UPMのgit URLインストールに必要）
-- S3互換バケット（Cloudflare R2推奨）または Googleアカウント
-
-## インストール
-
-**Package Manager UI**: `Window > Package Manager` → `+` → *Add package from git URL*:
+**Unity 2021.3+** とgitクライアントが必要です。`Window > Package Manager` → `+` → *Add package from git URL*:
 
 ```
 https://github.com/Plumvery/UniLFS.git
 ```
 
-**または `Packages/manifest.json`**:
+または `Packages/manifest.json` で（タグでバージョン固定）:
 
 ```json
 {
   "dependencies": {
-    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git"
+    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git#v0.2.0"
   }
 }
 ```
 
-タグでバージョン固定: `https://github.com/Plumvery/UniLFS.git#v0.2.0`
-
-## クイックスタート（Cloudflare R2）
+## 🚀 クイックスタート（Cloudflare R2）
 
 1. R2バケットと *Object Read & Write* 権限のAPIトークンを作成 — [手順ガイド](Documentation~/setup-r2.md)
 2. Unityで `Edit > Project Settings > UniLFS` を開く:
@@ -74,11 +96,11 @@ https://github.com/Plumvery/UniLFS.git
 6. `unilfs.manifest.json`・`.gitignore`・`ProjectSettings/UniLFSSettings.json`・アセットの`.meta`をコミット。
    すでにgitにコミット済みだったファイルは、Consoleに表示される `git rm --cached` コマンドを実行してください。
 
-チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します（[自動同期](#自動同期--gitフック不要)参照）。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
+チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
 
 Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md) へ。
 
-## UniLFSウィンドウ（`Window > UniLFS`）
+## 🖥️ UniLFSウィンドウ（`Window > UniLFS`）
 
 | ボタン | 動作 |
 |--------|------|
@@ -90,7 +112,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 状態表示: **up to date**（マニフェストと一致）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
 
-## 自動同期 — gitフック不要
+## 🔄 自動同期 — gitフック不要
 
 実ファイルのバイト列は「編集したマシン」にしか存在しないため、同期は必ずクライアント側から始まります（git-lfsも同じ仕組みです）。UniLFSはエディタ内から双方向を自動化し、すり抜けはCIで検出します:
 
@@ -102,7 +124,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 モード設定は `Edit > Project Settings > UniLFS`。同じ状態につきエディタセッション中1回しか反応しないので、「Later」を選んでもフォーカスのたびに聞かれることはありません。
 
-## 設定と認証情報
+## 🔐 設定と認証情報
 
 | ファイル | コミット | 内容 |
 |----------|---------|------|
@@ -116,20 +138,20 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 認証情報は `UserSettings/UniLFS.json` に平文で保存されます（`~/.aws/credentials`と同様の方式）。UniLFSはこのファイルを必ず`.gitignore`ブロックに含めますが、シークレットとして扱ってください。
 
-## CI
+## 🤖 CI
 
 ```sh
 Unity -batchmode -nographics -quit -projectPath . \
   -executeMethod UniLFS.Editor.UniLfsCli.Pull
 ```
 
-`Pull` / `Push` / `Status` が使えます。エラーがあるとプロセスは非ゼロで終了します。GitHub Actionsの例は [Documentation~/ci.md](Documentation~/ci.md) へ。
+`Pull` / `Push` / `Verify` / `Status` が使えます。エラーがあるとプロセスは非ゼロで終了します。Unity不要の検証ゲートとGitHub Actionsの実例は [Documentation~/ci.md](Documentation~/ci.md) へ。
 
-## マージの挙動
+## 🔀 マージの挙動
 
 マニフェストは1ファイル1行・ソート済みなので、**別々の**ファイルを追跡した2人の変更はきれいにマージされます。**同じ**ファイルを2人が変更した場合は1行のコンフリクトになるので、採用したいハッシュを選んで **Pull**（自分のローカル版を上書きするなら **Restore Modified**）してください。どちらの版のブロブもリモートに存在するので、データが失われることはありません。
 
-## 制限事項（v0.1）
+## ⚠️ 制限事項（v0.2）
 
 - ファイルロック機能なし（素のgitと同じく、バイナリを誰が編集するかはチームで調整）
 - 古いブロブのGCは未実装（ストレージは安価。`prune`はロードマップにあり）
@@ -137,15 +159,15 @@ Unity -batchmode -nographics -quit -projectPath . \
 - Google Driveは個人〜小規模チーム向き（レート制限・容量の注意はガイド参照）
 - エディタ専用: ビルド前にPullが必要（そのためのCIエントリポイントです）
 
-## ロードマップ
+## 🗺️ ロードマップ
 
 - ブロブのprune / GC
 - パターン指定の自動追跡（フォルダ以下を全部追跡など）
 - マルチパートアップロード
 - OpenUPM掲載
 
-PR・Issue歓迎です。
+PR・Issue歓迎です！
 
-## ライセンス
+## 📄 ライセンス
 
-[MIT](LICENSE.md)
+[MIT](LICENSE.md) © [Plumvery](https://github.com/Plumvery)

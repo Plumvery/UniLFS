@@ -26,10 +26,18 @@ namespace UniLFS.Editor.Tests
             Assert.AreEqual("Assets/Foo/bar.png", UniLfsPaths.ToProjectRelative("Assets/Foo/bar.png"));
         }
 
+        /// <summary>
+        /// Built from ProjectRoot because "outside the project" has no portable
+        /// literal: this used to assert on "C:/...", which is only absolute on
+        /// Windows — on Unix the very same string is an ordinary relative path
+        /// that resolves *inside* the project, so the assertion described a
+        /// contract the method never had and failed everywhere but Windows.
+        /// </summary>
         [Test]
         public void ToProjectRelative_ReturnsNullOutsideProject()
         {
-            Assert.IsNull(UniLfsPaths.ToProjectRelative("C:/definitely/not/the/project/file.png"));
+            Assert.IsNull(UniLfsPaths.ToProjectRelative(
+                UniLfsPaths.Combine(UniLfsPaths.ProjectRoot, "../definitely-not-the-project/file.png")));
         }
 
         [Test]

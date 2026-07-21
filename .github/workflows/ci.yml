@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate package.json and asmdefs
+        run: |
+          python3 - <<'EOF'
+          import json
+          for f in ["package.json", "Editor/UniLFS.Editor.asmdef", "Tests/Editor/UniLFS.Editor.Tests.asmdef"]:
+              json.load(open(f, encoding="utf-8"))
+              print("OK", f)
+          EOF
+      - name: Lint CI verify script
+        run: python3 -m py_compile "Documentation~/ci/verify_manifest.py"
+
+  license-gate:
+    # Unity tests need a license. Without the UNITY_LICENSE secret the test job
+    # is skipped (not failed), so forks and fresh clones stay green.
+    name: Unity license present?
+    runs-on: ubuntu-latest
+    outputs:
+      has-license: ${{ steps.check.outputs.has }}
+    steps:
+      - id: check
+        env:
+          UL: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -n "$UL" ]; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "UNITY_LICENSE secret is not set - skipping Unity EditMode tests."
+          fi
+
+  editmode-tests:
+    name: EditMode tests (Unity 2022.3)
+    needs: license-gate
+    if: needs.license-gate.outputs.has-license == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create wrapper test project
+        run: |
+          mkdir -p TestProject/Assets TestProject/Packages TestProject/ProjectSettings
+          echo "m_EditorVersion: 2022.3.62f3" > TestProject/ProjectSettings/ProjectVersion.txt
+          cat > TestProject/Packages/manifest.json <<'EOF'
+          {
+            "dependencies": {
+              "com.plumvery.unilfs": "file:../..",
+              "com.unity.test-framework": "1.1.33"
+            },
+            "testables": ["com.plumvery.unilfs"]
+          }
+          EOF
+      - uses: actions/cache@v4
+        with:
+          path: TestProject/Library
+          key: Library-${{ runner.os }}-2022.3.62f3
+      - uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: TestProject
+          testMode: EditMode
+          artifactsPath: TestResults
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: TestResults

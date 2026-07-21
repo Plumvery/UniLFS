@@ -5,6 +5,8 @@
 **Store large Unity assets in your own external storage —<br>Cloudflare R2 / any S3-compatible service / Google Drive — instead of Git LFS.**
 
 [![Latest release](https://img.shields.io/github/v/release/Plumvery/UniLFS?label=release&color=ff8a5c)](https://github.com/Plumvery/UniLFS/releases)
+[![openupm](https://img.shields.io/npm/v/com.plumvery.unilfs?label=openupm&registry_uri=https://package.openupm.com)](https://openupm.com/packages/com.plumvery.unilfs/)
+[![CI](https://github.com/Plumvery/UniLFS/actions/workflows/ci.yml/badge.svg)](https://github.com/Plumvery/UniLFS/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da638)](LICENSE.md)
 [![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-222c37?logo=unity&logoColor=white)](#-install)
 
@@ -66,21 +68,41 @@ remote storage:
 
 ## 📦 Install
 
-Requires **Unity 2021.3+** and a git client. In `Window > Package Manager` → `+` → *Add package from git URL*:
+Requires **Unity 2021.3+**.
 
-```
-https://github.com/Plumvery/UniLFS.git
+**Via [OpenUPM](https://openupm.com/packages/com.plumvery.unilfs/)** — recommended; version updates show up in the Package Manager UI:
+
+```sh
+openupm add com.plumvery.unilfs
 ```
 
-Or in `Packages/manifest.json` (pin a version with a tag):
+<details>
+<summary>…or add the scoped registry to <code>Packages/manifest.json</code> manually</summary>
 
 ```json
 {
+  "scopedRegistries": [
+    {
+      "name": "OpenUPM",
+      "url": "https://package.openupm.com",
+      "scopes": ["com.plumvery.unilfs"]
+    }
+  ],
   "dependencies": {
-    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git#v0.2.0"
+    "com.plumvery.unilfs": "0.2.0"
   }
 }
 ```
+
+</details>
+
+**Via git URL** (needs a git client) — `Window > Package Manager` → `+` → *Add package from git URL*:
+
+```
+https://github.com/Plumvery/UniLFS.git#v0.2.0
+```
+
+Omit the `#v0.2.0` tag to track `main`.
 
 ## 🚀 Quick start (Cloudflare R2)
 

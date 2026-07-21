@@ -5,6 +5,8 @@
 **Unityの大容量アセットを、Git LFSの代わりに自分の外部ストレージへ<br>（Cloudflare R2 / S3互換サービス / Google Drive）**
 
 [![Latest release](https://img.shields.io/github/v/release/Plumvery/UniLFS?label=release&color=ff8a5c)](https://github.com/Plumvery/UniLFS/releases)
+[![openupm](https://img.shields.io/npm/v/com.plumvery.unilfs?label=openupm&registry_uri=https://package.openupm.com)](https://openupm.com/packages/com.plumvery.unilfs/)
+[![CI](https://github.com/Plumvery/UniLFS/actions/workflows/ci.yml/badge.svg)](https://github.com/Plumvery/UniLFS/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da638)](LICENSE.md)
 [![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-222c37?logo=unity&logoColor=white)](#-インストール)
 
@@ -66,21 +68,41 @@ your-project/
 
 ## 📦 インストール
 
-**Unity 2021.3+** とgitクライアントが必要です。`Window > Package Manager` → `+` → *Add package from git URL*:
+**Unity 2021.3+** が必要です。
 
-```
-https://github.com/Plumvery/UniLFS.git
+**[OpenUPM](https://openupm.com/packages/com.plumvery.unilfs/) 経由**（推奨。Package Manager UIにバージョン更新が表示されます）:
+
+```sh
+openupm add com.plumvery.unilfs
 ```
 
-または `Packages/manifest.json` で（タグでバージョン固定）:
+<details>
+<summary>…または <code>Packages/manifest.json</code> にスコープレジストリを手動追加</summary>
 
 ```json
 {
+  "scopedRegistries": [
+    {
+      "name": "OpenUPM",
+      "url": "https://package.openupm.com",
+      "scopes": ["com.plumvery.unilfs"]
+    }
+  ],
   "dependencies": {
-    "com.plumvery.unilfs": "https://github.com/Plumvery/UniLFS.git#v0.2.0"
+    "com.plumvery.unilfs": "0.2.0"
   }
 }
 ```
+
+</details>
+
+**git URL経由**（gitクライアントが必要）— `Window > Package Manager` → `+` → *Add package from git URL*:
+
+```
+https://github.com/Plumvery/UniLFS.git#v0.2.0
+```
+
+`#v0.2.0` を省くと `main` 追従になります。
 
 ## 🚀 クイックスタート（Cloudflare R2）
 

@@ -128,7 +128,7 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 
 | Button | What it does |
 |--------|--------------|
-| Refresh | Re-checks every tracked file (cheap — hashes are cached by mtime+size) |
+| Refresh | Re-checks every tracked file, and asks storage whether it really has their blobs |
 | Push | Uploads new/changed blobs, then updates the manifest |
 | Pull | Downloads files that are missing locally |
 | Restore Modified | Overwrites locally modified files with the manifest version (asks first) |
@@ -136,7 +136,7 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 
 File states: **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but was never uploaded from this machine — typically tracked but not yet pushed) / **modified** (local edit not pushed) / **missing** (needs Pull).
 
-"Confirmed in storage" is recorded locally under `Library/UniLFS/` whenever a Push, Pull or Verify proves a blob exists, so the list costs no network calls. Deleting `Library/` just makes files show as **not pushed** until the next Push or Pull confirms them again.
+"Confirmed in storage" is recorded locally under `Library/UniLFS/` whenever a Push, Pull or Verify proves a blob exists, so drawing the list costs no network calls. **Refresh** is what re-establishes that proof: it asks storage about every blob in the manifest, which is how a fresh clone (which has confirmed nothing yet) stops showing everything as not pushed, and how a blob deleted from the bucket goes back to **not pushed**. Opening the window and the re-check after a Push or Pull stay local-only.
 
 ## 🔄 Auto sync — no git hooks needed
 

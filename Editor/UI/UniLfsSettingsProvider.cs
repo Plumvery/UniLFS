@@ -8,11 +8,24 @@ namespace UniLFS.Editor
 {
     class UniLfsSettingsProvider : SettingsProvider
     {
+        /// <summary>Wide enough for "Secret Access Key" and "Client Secret (project)" not to be clipped.</summary>
+        const float LabelWidth = 190f;
+
+        static GUIStyle _pageStyle;
+
         UniLfsSettings _settings;
         UniLfsUserSettings _user;
         string _statusMessage = "";
+        MessageType _statusType = MessageType.Info;
         bool _working;
         string _newFolderName = "UniLFS";
+
+        // Text fields write straight into the in-memory settings objects, but
+        // persisting is deferred until the field loses focus. Saving per
+        // keystroke rewrote the settings JSON — and, for user settings, the
+        // whole managed .gitignore block — once per typed character.
+        string _pendingControl;
+        Action _pendingCommit;
 
         UniLfsSettingsProvider(string path, SettingsScope scope, System.Collections.Generic.IEnumerable<string> keywords)
             : base(path, scope, keywords)
@@ -31,51 +44,90 @@ namespace UniLFS.Editor
             _settings = UniLfsSettings.Load();
             _user = UniLfsUserSettings.Load();
             _statusMessage = "";
+            _statusType = MessageType.Info;
+        }
+
+        public override void OnDeactivate()
+        {
+            FlushPendingCommit();
+        }
+
+        static GUIStyle PageStyle
+        {
+            get
+            {
+                // Custom settings pages otherwise render flush against the pane
+                // edge, unlike every built-in one.
+                if (_pageStyle == null) _pageStyle = new GUIStyle { padding = new RectOffset(10, 10, 4, 10) };
+                return _pageStyle;
+            }
         }
 
         public override void OnGUI(string searchContext)
         {
             if (_settings == null || _user == null) OnActivate(null, null);
 
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("UniLFS stores tracked large files in your own external storage instead of Git LFS.", EditorStyles.wordWrappedLabel);
-            EditorGUILayout.Space();
+            float previousLabelWidth = EditorGUIUtility.labelWidth;
+            EditorGUIUtility.labelWidth = LabelWidth;
+            EditorGUILayout.BeginVertical(PageStyle);
+            try
+            {
+                // GUILayout.Label, not LabelField: LabelField reserves a single
+                // line, so a wrapped sentence loses everything after line one.
+                GUILayout.Label(
+                    "UniLFS stores tracked large files in your own external storage instead of Git LFS.",
+                    EditorStyles.wordWrappedLabel);
+                EditorGUILayout.Space(8);
+
+                DrawStorageSelection();
+                EditorGUILayout.Space(4);
+                if (_settings.ProviderKind == UniLfsProviderKind.S3Compatible) DrawS3(); else DrawGoogleDrive();
+
+                EditorGUILayout.Space(12);
+                DrawConnectionTest();
+            }
+            finally
+            {
+                EditorGUILayout.EndVertical();
+                EditorGUIUtility.labelWidth = previousLabelWidth;
+            }
+
+            FlushPendingCommitIfFocusLeft();
+        }
+
+        void DrawStorageSelection()
+        {
+            EditorGUILayout.LabelField("Storage", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
             int providerIndex = _settings.ProviderKind == UniLfsProviderKind.GoogleDrive ? 1 : 0;
-            providerIndex = EditorGUILayout.Popup("Provider", providerIndex,
-                new[] { "S3 compatible (Cloudflare R2 / S3 / MinIO)", "Google Drive" });
+            providerIndex = EditorGUILayout.Popup(
+                new GUIContent("Provider", "Where tracked files are uploaded to. Changing this does not move blobs already uploaded to the other provider."),
+                providerIndex,
+                new[] { "S3 compatible (R2 / S3 / MinIO)", "Google Drive" });
             _settings.provider = providerIndex == 1 ? UniLfsSettings.ProviderGoogleDrive : UniLfsSettings.ProviderS3;
-            _settings.parallelTransfers = EditorGUILayout.IntSlider("Parallel Transfers", _settings.parallelTransfers, 1, 16);
-            int autoPullIndex = (int)_settings.AutoPullMode;
-            autoPullIndex = EditorGUILayout.Popup(
+
+            _settings.parallelTransfers = EditorGUILayout.IntSlider(
+                new GUIContent("Parallel Transfers", "How many files upload or download at the same time"),
+                _settings.parallelTransfers, 1, 16);
+
+            int autoPullIndex = EditorGUILayout.Popup(
                 new GUIContent("Auto Pull", "What to do when the editor regains focus, the manifest changed (e.g. after a git pull) and tracked files are missing"),
-                autoPullIndex,
+                (int)_settings.AutoPullMode,
                 new[] { "Off (warn in Console)", "Ask (dialog)", "Automatic" });
             _settings.autoPull = autoPullIndex == 0 ? UniLfsSettings.AutoPullOff
                 : autoPullIndex == 2 ? UniLfsSettings.AutoPullAuto
                 : UniLfsSettings.AutoPullAsk;
-            int autoPushIndex = (int)_settings.AutoPushMode;
-            autoPushIndex = EditorGUILayout.Popup(
+
+            int autoPushIndex = EditorGUILayout.Popup(
                 new GUIContent("Auto Push", "What to do when tracked files have local changes that are not uploaded yet. Automatic uploads right after the asset is saved/imported"),
-                autoPushIndex,
+                (int)_settings.AutoPushMode,
                 new[] { "Off", "Ask (dialog)", "Automatic" });
             _settings.autoPush = autoPushIndex == 0 ? UniLfsSettings.AutoPushOff
                 : autoPushIndex == 2 ? UniLfsSettings.AutoPushAuto
                 : UniLfsSettings.AutoPushAsk;
+
             if (EditorGUI.EndChangeCheck()) _settings.Save();
-
-            EditorGUILayout.Space();
-            if (providerIndex == 0) DrawS3(); else DrawGoogleDrive();
-
-            EditorGUILayout.Space(16);
-            using (new EditorGUI.DisabledScope(_working))
-            {
-                if (GUILayout.Button("Test Connection", GUILayout.Width(140)))
-                    TestConnection();
-            }
-            if (!string.IsNullOrEmpty(_statusMessage))
-                EditorGUILayout.HelpBox(_statusMessage, MessageType.None);
         }
 
         void DrawS3()
@@ -94,12 +146,12 @@ namespace UniLFS.Editor
             _settings.s3Prefix = EditorGUILayout.DelayedTextField(new GUIContent("Key Prefix", "Objects are stored under <prefix>/objects/..."), _settings.s3Prefix);
             if (EditorGUI.EndChangeCheck()) _settings.Save();
 
-            EditorGUILayout.Space();
+            EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Credentials (per-user, not committed)", EditorStyles.boldLabel);
-            EditorGUI.BeginChangeCheck();
-            _user.s3AccessKeyId = EditorGUILayout.TextField("Access Key ID", _user.s3AccessKeyId);
-            _user.s3SecretAccessKey = EditorGUILayout.PasswordField("Secret Access Key", _user.s3SecretAccessKey);
-            if (EditorGUI.EndChangeCheck()) _user.Save();
+            _user.s3AccessKeyId = UserField("unilfs.s3.accessKeyId", new GUIContent("Access Key ID"), _user.s3AccessKeyId, false);
+            _user.s3SecretAccessKey = UserField("unilfs.s3.secretAccessKey", new GUIContent("Secret Access Key"), _user.s3SecretAccessKey, true);
+
+            WarnIfIncomplete();
         }
 
         void DrawGoogleDrive()
@@ -110,23 +162,22 @@ namespace UniLFS.Editor
                 + "Client ID/secret below are project settings shared with the team. If your git repo is public, leave them empty here and use the per-user fields instead.",
                 MessageType.Info);
 
+            _settings.driveClientId = ProjectField("unilfs.drive.clientId", new GUIContent("Client ID (project)"), _settings.driveClientId, false);
+            _settings.driveClientSecret = ProjectField("unilfs.drive.clientSecret", new GUIContent("Client Secret (project)"), _settings.driveClientSecret, true);
             EditorGUI.BeginChangeCheck();
-            _settings.driveClientId = EditorGUILayout.DelayedTextField("Client ID (project)", _settings.driveClientId);
-            _settings.driveClientSecret = EditorGUILayout.PasswordField("Client Secret (project)", _settings.driveClientSecret);
-            _settings.driveFolderId = EditorGUILayout.DelayedTextField(new GUIContent("Folder ID", "The ID from the Drive folder URL: drive.google.com/drive/folders/<ID>"), _settings.driveFolderId);
+            _settings.driveFolderId = EditorGUILayout.DelayedTextField(
+                new GUIContent("Folder ID", "The ID from the Drive folder URL: drive.google.com/drive/folders/<ID>"), _settings.driveFolderId);
             if (EditorGUI.EndChangeCheck()) _settings.Save();
 
-            EditorGUILayout.Space();
+            EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Per-user overrides (not committed)", EditorStyles.boldLabel);
-            EditorGUI.BeginChangeCheck();
-            _user.driveClientId = EditorGUILayout.DelayedTextField("Client ID (per-user)", _user.driveClientId);
-            _user.driveClientSecret = EditorGUILayout.PasswordField("Client Secret (per-user)", _user.driveClientSecret);
-            if (EditorGUI.EndChangeCheck()) _user.Save();
+            _user.driveClientId = UserField("unilfs.drive.userClientId", new GUIContent("Client ID (per-user)"), _user.driveClientId, false);
+            _user.driveClientSecret = UserField("unilfs.drive.userClientSecret", new GUIContent("Client Secret (per-user)"), _user.driveClientSecret, true);
 
-            EditorGUILayout.Space();
+            EditorGUILayout.Space(8);
             bool signedIn = !string.IsNullOrEmpty(_user.driveRefreshToken);
-            EditorGUILayout.LabelField("Account: " + (signedIn ? "signed in" : "not signed in"), EditorStyles.miniLabel);
-            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Account", signedIn ? "Signed in" : "Not signed in");
+            using (FieldColumn.Open())
             using (new EditorGUI.DisabledScope(_working))
             {
                 if (GUILayout.Button(signedIn ? "Sign in again" : "Sign in with Google", GUILayout.Width(150)))
@@ -137,28 +188,120 @@ namespace UniLFS.Editor
                     {
                         _user.driveRefreshToken = "";
                         _user.Save();
-                        _statusMessage = "Signed out. (The token was only removed locally.)";
+                        SetStatus("Signed out. (The token was only removed locally.)", MessageType.Info);
                     }
                 }
             }
-            EditorGUILayout.EndHorizontal();
 
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Create a storage folder in My Drive", EditorStyles.miniLabel);
+            EditorGUILayout.Space(8);
             EditorGUILayout.BeginHorizontal();
-            _newFolderName = EditorGUILayout.TextField(_newFolderName);
+            _newFolderName = EditorGUILayout.TextField(
+                new GUIContent("New Folder Name", "Creates a folder in My Drive and selects it as the storage folder"), _newFolderName);
             using (new EditorGUI.DisabledScope(_working || !signedIn))
             {
-                if (GUILayout.Button("Create Folder", GUILayout.Width(110)))
+                if (GUILayout.Button("Create", GUILayout.Width(80)))
                     CreateFolder();
             }
             EditorGUILayout.EndHorizontal();
+
+            WarnIfIncomplete();
+        }
+
+        void DrawConnectionTest()
+        {
+            using (new EditorGUI.DisabledScope(_working))
+            {
+                if (GUILayout.Button(_working ? "Testing..." : "Test Connection", GUILayout.Width(140)))
+                    TestConnection();
+            }
+            if (!string.IsNullOrEmpty(_statusMessage))
+            {
+                EditorGUILayout.Space(4);
+                EditorGUILayout.HelpBox(_statusMessage, _statusType);
+            }
+        }
+
+        /// <summary>Lists what still has to be filled in before Push/Pull can work.</summary>
+        void WarnIfIncomplete()
+        {
+            var missing = UniLfsProviderStatus.MissingRequirements(_settings, _user);
+            if (missing.Count == 0) return;
+            EditorGUILayout.Space(4);
+            EditorGUILayout.HelpBox("This provider still needs " + UniLfsProviderStatus.Describe(missing) + ".", MessageType.Warning);
+        }
+
+        string ProjectField(string controlName, GUIContent label, string value, bool password)
+        {
+            return DeferredField(controlName, label, value, password, () => _settings.Save());
+        }
+
+        string UserField(string controlName, GUIContent label, string value, bool password)
+        {
+            return DeferredField(controlName, label, value, password, () => _user.Save());
+        }
+
+        string DeferredField(string controlName, GUIContent label, string value, bool password, Action commit)
+        {
+            GUI.SetNextControlName(controlName);
+            EditorGUI.BeginChangeCheck();
+            // PasswordField has no delayed variant, so focus tracking (rather
+            // than DelayedTextField) is what defers the write for both kinds.
+            string edited = password
+                ? EditorGUILayout.PasswordField(label, value)
+                : EditorGUILayout.TextField(label, value);
+            if (EditorGUI.EndChangeCheck()) SchedulePendingCommit(controlName, commit);
+            return edited;
+        }
+
+        void SchedulePendingCommit(string controlName, Action commit)
+        {
+            if (_pendingCommit != null && _pendingControl != controlName) FlushPendingCommit();
+            _pendingControl = controlName;
+            _pendingCommit = commit;
+        }
+
+        void FlushPendingCommitIfFocusLeft()
+        {
+            if (_pendingCommit != null && GUI.GetNameOfFocusedControl() != _pendingControl) FlushPendingCommit();
+        }
+
+        void FlushPendingCommit()
+        {
+            if (_pendingCommit == null) return;
+            var commit = _pendingCommit;
+            _pendingCommit = null;
+            _pendingControl = null;
+            commit();
+        }
+
+        /// <summary>A horizontal row indented to line up with the field column.</summary>
+        struct FieldColumn : IDisposable
+        {
+            public void Dispose()
+            {
+                GUILayout.FlexibleSpace();
+                EditorGUILayout.EndHorizontal();
+            }
+
+            public static FieldColumn Open()
+            {
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Space(EditorGUIUtility.labelWidth);
+                return new FieldColumn();
+            }
+        }
+
+        void SetStatus(string message, MessageType type)
+        {
+            _statusMessage = message;
+            _statusType = type;
         }
 
         async void SignIn()
         {
+            FlushPendingCommit();
             _working = true;
-            _statusMessage = "A browser window opened - finish the Google consent screen there...";
+            SetStatus("A browser window opened - finish the Google consent screen there...", MessageType.Info);
             RepaintSettings();
             try
             {
@@ -167,11 +310,11 @@ namespace UniLFS.Editor
                 var tokens = await GoogleOAuth.SignInAsync(clientId, clientSecret, CancellationToken.None);
                 _user.driveRefreshToken = tokens.RefreshToken;
                 _user.Save();
-                _statusMessage = "Signed in to Google Drive.";
+                SetStatus("Signed in to Google Drive.", MessageType.Info);
             }
             catch (Exception e)
             {
-                _statusMessage = "Sign-in failed: " + e.Message;
+                SetStatus("Sign-in failed: " + e.Message, MessageType.Error);
                 Debug.LogException(e);
             }
             finally
@@ -183,8 +326,9 @@ namespace UniLFS.Editor
 
         async void CreateFolder()
         {
+            FlushPendingCommit();
             _working = true;
-            _statusMessage = "Creating folder...";
+            SetStatus("Creating folder...", MessageType.Info);
             RepaintSettings();
             try
             {
@@ -194,11 +338,11 @@ namespace UniLFS.Editor
                 string id = await GoogleDriveProvider.CreateFolderAsync(clientId, clientSecret, refreshToken, _newFolderName, CancellationToken.None);
                 _settings.driveFolderId = id;
                 _settings.Save();
-                _statusMessage = "Created folder '" + _newFolderName + "' (ID: " + id + ") and saved it to the settings. Share this folder with your teammates.";
+                SetStatus("Created folder '" + _newFolderName + "' (ID: " + id + ") and saved it to the settings. Share this folder with your teammates.", MessageType.Info);
             }
             catch (Exception e)
             {
-                _statusMessage = "Folder creation failed: " + e.Message;
+                SetStatus("Folder creation failed: " + e.Message, MessageType.Error);
                 Debug.LogException(e);
             }
             finally
@@ -210,20 +354,21 @@ namespace UniLFS.Editor
 
         async void TestConnection()
         {
+            FlushPendingCommit();
             _working = true;
-            _statusMessage = "Testing connection...";
+            SetStatus("Testing connection...", MessageType.Info);
             RepaintSettings();
             try
             {
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
                 using (var provider = UniLfsCore.CreateProvider(_settings, _user))
                 {
-                    _statusMessage = await provider.TestConnectionAsync(cts.Token);
+                    SetStatus(await provider.TestConnectionAsync(cts.Token), MessageType.Info);
                 }
             }
             catch (Exception e)
             {
-                _statusMessage = "Connection failed: " + e.Message;
+                SetStatus("Connection failed: " + e.Message, MessageType.Error);
             }
             finally
             {

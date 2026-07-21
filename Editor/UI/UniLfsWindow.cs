@@ -25,26 +25,57 @@ namespace UniLFS.Editor
         string _lastMessage = "";
         Vector2 _scroll;
         CancellationTokenSource _cts;
+        /// <summary>A refresh that lost the race for the operation lock, retried once it frees.</summary>
+        bool _refreshPending;
+
+        // Provider config is read from disk, so it is cached rather than
+        // reloaded every repaint.
+        UniLfsSettings _settings;
+        UniLfsUserSettings _user;
+        List<string> _missingConfig = new List<string>();
 
         void OnEnable()
         {
+            RefreshProviderInfo();
             if (File.Exists(UniLfsPaths.ManifestPath))
                 RefreshStatus();
         }
 
+        void OnFocus()
+        {
+            RefreshProviderInfo();
+        }
+
+        void RefreshProviderInfo()
+        {
+            _settings = UniLfsSettings.Load();
+            _user = UniLfsUserSettings.Load();
+            _missingConfig = UniLfsProviderStatus.MissingRequirements(_settings, _user);
+        }
+
         void OnGUI()
         {
+            if (_settings == null) RefreshProviderInfo();
             DrawToolbar();
             DrawHeader();
             if (_busy) DrawProgress();
             DrawList();
             DrawFooter();
+
+            // An operation started elsewhere (Auto Push, the asset menu) also
+            // disables the toolbar, so keep repainting until it releases — then
+            // run whatever refresh was queued while it held the lock.
+            if (!_busy)
+            {
+                if (UniLfsOperationLock.IsBusy) Repaint();
+                else if (_refreshPending) { _refreshPending = false; RefreshStatus(); }
+            }
         }
 
         void DrawToolbar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            using (new EditorGUI.DisabledScope(_busy))
+            using (new EditorGUI.DisabledScope(_busy || UniLfsOperationLock.IsBusy))
             {
                 if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(60)))
                     RefreshStatus();
@@ -78,23 +109,87 @@ namespace UniLFS.Editor
 
         void DrawHeader()
         {
-            var settings = UniLfsSettings.Load();
-            string provider = settings.ProviderKind == UniLfsProviderKind.GoogleDrive
+            string provider = _settings.ProviderKind == UniLfsProviderKind.GoogleDrive
                 ? "Google Drive"
-                : "S3 compatible (" + (string.IsNullOrEmpty(settings.s3Bucket) ? "not configured" : settings.s3Bucket) + ")";
-            EditorGUILayout.LabelField("Provider: " + provider, EditorStyles.miniLabel);
+                : "S3 compatible (" + (string.IsNullOrEmpty(_settings.s3Bucket) ? "not configured" : _settings.s3Bucket) + ")";
+            GUILayout.Label("Provider: " + provider, EditorStyles.miniLabel);
+
+            // Surfacing setup here as well as in the startup dialog: the sign-in
+            // button is buried in Project Settings, and a failed Push is a poor
+            // way to find out nobody ever signed in.
+            if (_missingConfig.Count == 0)
+            {
+                if (UniLfsSignInPrompt.Muted)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button(new GUIContent("Re-enable setup reminders",
+                        "Setup reminders were muted for this project with \"Don't ask again\""), EditorStyles.miniButton))
+                    {
+                        UniLfsSignInPrompt.Muted = false;
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+                return;
+            }
+
+            bool signInOnly = UniLfsProviderStatus.NeedsGoogleSignInOnly(_settings, _user);
+            EditorGUILayout.HelpBox(
+                signInOnly
+                    ? "Not signed in to Google Drive. Push and Pull will fail until you sign in."
+                    : "Push and Pull need " + UniLfsProviderStatus.Describe(_missingConfig) + ".",
+                MessageType.Warning);
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(_busy || UniLfsOperationLock.IsBusy))
+            {
+                if (signInOnly && GUILayout.Button("Sign in with Google", GUILayout.Width(150)))
+                    SignIn();
+                if (GUILayout.Button("Open Settings", GUILayout.Width(110)))
+                    SettingsService.OpenProjectSettings("Project/UniLFS");
+            }
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+        }
+
+        async void SignIn()
+        {
+            try
+            {
+                var tokens = await GoogleOAuth.SignInAsync(
+                    UniLfsCredentials.DriveClientId(_settings, _user),
+                    UniLfsCredentials.DriveClientSecret(_settings, _user),
+                    CancellationToken.None);
+                _user.driveRefreshToken = tokens.RefreshToken;
+                _user.Save();
+                _lastMessage = "Signed in to Google Drive.";
+            }
+            catch (Exception e)
+            {
+                _lastMessage = "Sign-in failed: " + e.Message;
+                Debug.LogException(e);
+            }
+            finally
+            {
+                RefreshProviderInfo();
+                Repaint();
+            }
         }
 
         void DrawProgress()
         {
-            var rect = EditorGUILayout.GetControlRect(false, 18);
-            float overall = _progress.Total > 0
-                ? Mathf.Clamp01((_progress.Done + _progress.ItemProgress) / _progress.Total)
-                : 0f;
-            string label = _busyLabel;
-            if (!string.IsNullOrEmpty(_progress.Phase))
-                label = _progress.Phase + " (" + Mathf.Min(_progress.Done + 1, Mathf.Max(_progress.Total, 1)) + "/" + _progress.Total + ") " + _progress.Item;
-            EditorGUI.ProgressBar(rect, overall, label);
+            var barRect = EditorGUILayout.GetControlRect(false, 18);
+            EditorGUI.ProgressBar(barRect, _progress.Fraction,
+                string.IsNullOrEmpty(_progress.Label) ? _busyLabel + "..." : _progress.Label);
+
+            // The detail line always reserves its row, even while empty: letting
+            // it appear and vanish shifted the whole file list up and down.
+            var detailRect = EditorGUILayout.GetControlRect(false, 14);
+            if (_progress.TotalBytes > 0)
+            {
+                string detail = EditorUtility.FormatBytes(_progress.DoneBytes) + " / " + EditorUtility.FormatBytes(_progress.TotalBytes);
+                if (_progress.Active > 1) detail += "   -   " + _progress.Active + " transfers in flight";
+                GUI.Label(detailRect, detail, EditorStyles.miniLabel);
+            }
         }
 
         void DrawList()
@@ -115,14 +210,15 @@ namespace UniLFS.Editor
             {
                 EditorGUILayout.BeginHorizontal();
                 Color color;
-                string badge = StateBadge(s.State, out color);
+                string tooltip;
+                string badge = StateBadge(s, out color, out tooltip);
                 var previous = GUI.color;
                 GUI.color = color;
-                GUILayout.Label("●", GUILayout.Width(16));
+                GUILayout.Label(new GUIContent("●", tooltip), GUILayout.Width(16));
                 GUI.color = previous;
                 GUILayout.Label(new GUIContent(s.File.path, s.File.path + "\nsha256: " + s.File.hash), GUILayout.ExpandWidth(true));
                 GUILayout.Label(EditorUtility.FormatBytes(s.File.size), EditorStyles.miniLabel, GUILayout.Width(80));
-                GUILayout.Label(badge, EditorStyles.miniLabel, GUILayout.Width(90));
+                GUILayout.Label(new GUIContent(badge, tooltip), EditorStyles.miniLabel, GUILayout.Width(90));
                 EditorGUILayout.EndHorizontal();
             }
             EditorGUILayout.EndScrollView();
@@ -133,39 +229,58 @@ namespace UniLFS.Editor
             GUILayout.FlexibleSpace();
             if (_statuses != null && _statuses.Count > 0)
             {
-                int upToDate = 0, modified = 0, missing = 0;
+                int upToDate = 0, notPushed = 0, modified = 0, missing = 0;
                 long totalSize = 0;
                 foreach (var s in _statuses)
                 {
                     totalSize += s.File.size;
                     switch (s.State)
                     {
-                        case UniLfsFileState.UpToDate: upToDate++; break;
+                        case UniLfsFileState.UpToDate:
+                            if (s.RemoteKnown) upToDate++; else notPushed++;
+                            break;
                         case UniLfsFileState.Modified: modified++; break;
                         case UniLfsFileState.MissingLocal: missing++; break;
                     }
                 }
-                EditorGUILayout.LabelField(
+                GUILayout.Label(
                     _statuses.Count + " tracked (" + EditorUtility.FormatBytes(totalSize) + ")  |  " +
-                    upToDate + " up to date, " + modified + " modified, " + missing + " missing",
+                    upToDate + " up to date, " + notPushed + " not pushed, " + modified + " modified, " + missing + " missing",
                     EditorStyles.miniLabel);
             }
+            // GUILayout.Label, not LabelField: LabelField reserves a single line,
+            // so the tail of a long summary was being cut off.
             if (!string.IsNullOrEmpty(_lastMessage))
-                EditorGUILayout.LabelField(_lastMessage, EditorStyles.wordWrappedMiniLabel);
+                GUILayout.Label(_lastMessage, EditorStyles.wordWrappedMiniLabel);
         }
 
-        static string StateBadge(UniLfsFileState state, out Color color)
+        /// <summary>
+        /// Four states, because "matches the manifest" and "exists in remote
+        /// storage" are different questions: a freshly tracked file matches the
+        /// manifest immediately while living nowhere but this disk.
+        /// </summary>
+        static string StateBadge(UniLfsStatusEntry entry, out Color color, out string tooltip)
         {
-            switch (state)
+            switch (entry.State)
             {
                 case UniLfsFileState.Modified:
                     color = new Color(0.95f, 0.75f, 0.2f);
+                    tooltip = "Locally changed since the last Push. Run Push to upload the new version.";
                     return "modified";
                 case UniLfsFileState.MissingLocal:
                     color = new Color(0.95f, 0.35f, 0.3f);
+                    tooltip = "Tracked but not on disk. Run Pull to download it.";
                     return "missing";
                 default:
+                    if (!entry.RemoteKnown)
+                    {
+                        color = new Color(0.45f, 0.65f, 0.95f);
+                        tooltip = "Matches the manifest, but this machine has no proof the blob was uploaded "
+                            + "(typically a file tracked but never pushed). Run Push to upload it.";
+                        return "not pushed";
+                    }
                     color = new Color(0.35f, 0.8f, 0.35f);
+                    tooltip = "Matches the manifest and the blob is confirmed in remote storage.";
                     return "up to date";
             }
         }
@@ -173,8 +288,17 @@ namespace UniLFS.Editor
         async void RefreshStatus()
         {
             if (_busy) return;
+            if (UniLfsOperationLock.IsBusy)
+            {
+                // Auto Push/Pull or the asset menu holds the lock. Queue the
+                // refresh instead of failing, or the list would sit stale until
+                // the user pressed Refresh themselves.
+                _refreshPending = true;
+                return;
+            }
             _busy = true;
             _busyLabel = "Refreshing";
+            _progress = default(UniLfsProgress);
             _cts = new CancellationTokenSource();
             try
             {
@@ -182,6 +306,11 @@ namespace UniLFS.Editor
             }
             catch (OperationCanceledException)
             {
+            }
+            catch (UniLfsBusyException e)
+            {
+                // Benign: Auto Push/Pull got there first. Not worth a stack trace.
+                _lastMessage = e.Message;
             }
             catch (Exception e)
             {
@@ -201,6 +330,8 @@ namespace UniLFS.Editor
             if (_busy) return;
             _busy = true;
             _busyLabel = label;
+            // Without this the bar briefly shows the previous run's numbers.
+            _progress = default(UniLfsProgress);
             _cts = new CancellationTokenSource();
             int progressId = Progress.Start("UniLFS " + label);
             Progress.RegisterCancelCallback(progressId, () =>
@@ -223,6 +354,11 @@ namespace UniLFS.Editor
                 _lastMessage = label + " cancelled.";
                 Progress.Finish(progressId, Progress.Status.Canceled);
             }
+            catch (UniLfsBusyException e)
+            {
+                _lastMessage = e.Message;
+                Progress.Finish(progressId, Progress.Status.Canceled);
+            }
             catch (Exception e)
             {
                 _lastMessage = label + " failed: " + e.Message;
@@ -234,10 +370,18 @@ namespace UniLFS.Editor
                 try
                 {
                     if (refreshAssets) AssetDatabase.Refresh();
-                    _statuses = await UniLfsCore.StatusAsync();
+                    // Keep the bar live through the post-operation re-hash too;
+                    // leaving it parked at 100% made the window look hung on
+                    // projects where a cold status check takes a while.
+                    _busyLabel = "Refreshing";
+                    _progress = default(UniLfsProgress);
+                    _statuses = await UniLfsCore.StatusAsync(UiProgress());
                 }
                 catch (Exception)
                 {
+                    // Most likely another operation grabbed the lock in between;
+                    // OnGUI retries once it frees.
+                    _refreshPending = true;
                 }
                 _busy = false;
                 if (_cts != null) { _cts.Dispose(); _cts = null; }
@@ -250,11 +394,7 @@ namespace UniLFS.Editor
             return new Progress<UniLfsProgress>(p =>
             {
                 _progress = p;
-                if (progressId >= 0)
-                {
-                    float overall = p.Total > 0 ? Mathf.Clamp01((p.Done + p.ItemProgress) / p.Total) : 0f;
-                    Progress.Report(progressId, overall, p.Phase + " " + p.Item);
-                }
+                if (progressId >= 0) Progress.Report(progressId, p.Fraction, p.Label);
                 Repaint();
             });
         }

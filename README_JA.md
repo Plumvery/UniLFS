@@ -134,7 +134,9 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 | Restore Modified | ローカル変更をマニフェストの版で上書き（確認ダイアログあり） |
 | Track / Untrack Selected | `Assets > UniLFS` の右クリックメニューと同じ |
 
-状態表示: **up to date**（マニフェストと一致）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
+状態表示: **up to date**（マニフェストと一致し、ストレージ上の blob も確認済み）/ **not pushed**（マニフェストとは一致するが、このマシンからのアップロードが確認できていない。Track しただけで未 Push の場合など）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
+
+「確認済み」かどうかは Push / Pull / Verify が blob の存在を証明したときに `Library/UniLFS/` へ記録されるため、一覧表示にネットワーク通信は発生しません。`Library/` を消した場合は次の Push / Pull で再確認されるまで **not pushed** 表示に戻ります。
 
 ## 🔄 自動同期 — gitフック不要
 

@@ -57,7 +57,7 @@ namespace UniLFS.Editor
 
         static void CheckPull()
         {
-            if (_running || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
 
             var manifestInfo = new FileInfo(UniLfsPaths.ManifestPath);
             if (!manifestInfo.Exists) return;
@@ -101,7 +101,7 @@ namespace UniLFS.Editor
 
         static void PromptPull(int missing)
         {
-            if (_running) return;
+            if (_running || UniLfsOperationLock.IsBusy) return;
             bool pull = EditorUtility.DisplayDialog("UniLFS",
                 missing + " tracked file(s) are missing locally - the UniLFS manifest changed, e.g. after a git pull.\n\nDownload them now?",
                 "Pull", "Later");
@@ -113,7 +113,7 @@ namespace UniLFS.Editor
 
         static async void RunPull()
         {
-            if (_running) return;
+            if (_running || UniLfsOperationLock.IsBusy) return;
             _running = true;
             int progressId = Progress.Start("UniLFS Auto Pull");
             try
@@ -127,6 +127,11 @@ namespace UniLFS.Editor
                 else
                     Debug.Log("UniLFS auto pull: downloaded " + result.Downloaded + " file(s)"
                         + (result.KeptModified.Count > 0 ? ", kept " + result.KeptModified.Count + " locally modified file(s)" : "") + ".");
+            }
+            catch (UniLfsBusyException)
+            {
+                // The user started the same operation from the window first.
+                Progress.Finish(progressId, Progress.Status.Canceled);
             }
             catch (UniLfsConfigException e)
             {
@@ -148,7 +153,7 @@ namespace UniLFS.Editor
 
         static async void CheckPush(bool focused, bool fromImport)
         {
-            if (_running || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
             if (!File.Exists(UniLfsPaths.ManifestPath)) return;
 
             var mode = UniLfsSettings.Load().AutoPushMode;
@@ -191,7 +196,7 @@ namespace UniLFS.Editor
 
         static void PromptPush(int modified)
         {
-            if (_running) return;
+            if (_running || UniLfsOperationLock.IsBusy) return;
             bool push = EditorUtility.DisplayDialog("UniLFS",
                 modified + " tracked file(s) have local changes that are not uploaded yet.\n\nPush them now? (Do this before committing unilfs.manifest.json.)",
                 "Push", "Later");
@@ -203,7 +208,7 @@ namespace UniLFS.Editor
 
         static async void RunPush()
         {
-            if (_running) return;
+            if (_running || UniLfsOperationLock.IsBusy) return;
             _running = true;
             int progressId = Progress.Start("UniLFS Auto Push");
             try
@@ -215,6 +220,11 @@ namespace UniLFS.Editor
                         + result.Errors.Count + " error(s):\n- " + string.Join("\n- ", result.Errors));
                 else if (result.Uploaded > 0)
                     Debug.Log("UniLFS auto push: uploaded " + result.Uploaded + " file(s). Remember to commit unilfs.manifest.json.");
+            }
+            catch (UniLfsBusyException)
+            {
+                // The user started the same operation from the window first.
+                Progress.Finish(progressId, Progress.Status.Canceled);
             }
             catch (UniLfsConfigException e)
             {
@@ -234,11 +244,7 @@ namespace UniLFS.Editor
 
         static IProgress<UniLfsProgress> ProgressReporter(int progressId)
         {
-            return new Progress<UniLfsProgress>(p =>
-            {
-                float overall = p.Total > 0 ? Mathf.Clamp01((p.Done + p.ItemProgress) / p.Total) : 0f;
-                Progress.Report(progressId, overall, p.Phase + " " + p.Item);
-            });
+            return new Progress<UniLfsProgress>(p => Progress.Report(progressId, p.Fraction, p.Label));
         }
     }
 

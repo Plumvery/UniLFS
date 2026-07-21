@@ -73,17 +73,24 @@ namespace UniLFS.Editor
                 throw new Exception("UniLFS " + label + " finished with " + result.Errors.Count + " error(s); see the log above.");
         }
 
-        /// <summary>Logs phase/item transitions only, so byte progress does not spam the log.</summary>
+        /// <summary>
+        /// Logs one line per phase start and per finished item, so byte progress
+        /// does not spam the log and parallel transfers still each get a line.
+        /// </summary>
         class ConsoleProgress : IProgress<UniLfsProgress>
         {
-            string _lastKey;
+            string _lastPhase;
 
             public void Report(UniLfsProgress p)
             {
-                string key = p.Phase + "|" + p.Item;
-                if (key == _lastKey) return;
-                _lastKey = key;
-                Debug.Log("UniLFS [" + p.Phase + "] (" + (p.Done + 1) + "/" + p.Total + ") " + p.Item);
+                if (p.Phase != _lastPhase)
+                {
+                    _lastPhase = p.Phase;
+                    if (!string.IsNullOrEmpty(p.Phase))
+                        Debug.Log("UniLFS [" + p.Phase + "] " + p.Total + " item(s)");
+                }
+                if (!string.IsNullOrEmpty(p.Completed))
+                    Debug.Log("UniLFS [" + p.Phase + "] (" + p.Done + "/" + p.Total + ") " + p.Completed);
             }
         }
     }

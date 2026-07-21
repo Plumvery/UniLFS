@@ -14,6 +14,13 @@ namespace UniLFS.Editor
     /// </summary>
     public static class UniLfsCore
     {
+        // Each operation runs the progress bar from 0 to 100% exactly once. The
+        // stages inside it get a fixed slice each, roughly proportional to how
+        // long they take on a cold cache, so the bar never restarts mid-run.
+        const float PushHashSpan = 0.25f;
+        const float PushCheckSpan = 0.10f;
+        const float PullStatusSpan = 0.20f;
+
         public static IUniLfsStorageProvider CreateProvider(UniLfsSettings settings, UniLfsUserSettings user)
         {
             switch (settings.ProviderKind)
@@ -35,37 +42,53 @@ namespace UniLFS.Editor
 
         public static async Task<List<UniLfsStatusEntry>> StatusAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire("Status"))
+                return await StatusUnlockedAsync(progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<List<UniLfsStatusEntry>> StatusUnlockedAsync(IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
+            var remote = UniLfsRemoteBlobCache.Load(UniLfsSettings.Load());
+            var reporter = new UniLfsProgressReporter(progress);
             try
             {
-                return await StatusInternalAsync(manifest, cache, progress, ct).ConfigureAwait(false);
+                var result = await StatusInternalAsync(manifest, cache, remote, reporter, 0f, 1f, ct).ConfigureAwait(false);
+                reporter.Finish();
+                return result;
             }
             finally
             {
                 cache.Save();
+                // Status is the operation that runs most often, so it is where
+                // confirmations for blobs the manifest dropped get collected.
+                remote.RetainOnly(manifest.files.Select(f => f.hash));
+                remote.Save();
             }
         }
 
-        static async Task<List<UniLfsStatusEntry>> StatusInternalAsync(UniLfsManifest manifest, UniLfsStateCache cache, IProgress<UniLfsProgress> progress, CancellationToken ct)
+        static async Task<List<UniLfsStatusEntry>> StatusInternalAsync(UniLfsManifest manifest, UniLfsStateCache cache, UniLfsRemoteBlobCache remote, UniLfsProgressReporter reporter, float start, float span, CancellationToken ct)
         {
+            reporter.BeginPhase("Checking files", start, span, manifest.files.Count, TotalSize(manifest.files));
             var result = new List<UniLfsStatusEntry>();
-            int i = 0;
             foreach (var f in manifest.files)
             {
                 ct.ThrowIfCancellationRequested();
-                Report(progress, "Checking files", f.path, i++, manifest.files.Count, 0f);
-                var entry = new UniLfsStatusEntry { File = f };
+                var entry = new UniLfsStatusEntry { File = f, RemoteKnown = remote.Contains(f.hash) };
                 var info = new FileInfo(UniLfsPaths.ToAbsolute(f.path));
-                if (!info.Exists)
+                using (var item = reporter.Begin(f.path, info.Exists ? info.Length : f.size))
                 {
-                    entry.State = UniLfsFileState.MissingLocal;
-                }
-                else
-                {
-                    entry.CurrentSize = info.Length;
-                    entry.CurrentHash = await cache.GetHashAsync(f.path, null, ct).ConfigureAwait(false);
-                    entry.State = entry.CurrentHash == f.hash ? UniLfsFileState.UpToDate : UniLfsFileState.Modified;
+                    if (!info.Exists)
+                    {
+                        entry.State = UniLfsFileState.MissingLocal;
+                    }
+                    else
+                    {
+                        entry.CurrentSize = info.Length;
+                        entry.CurrentHash = await cache.GetHashAsync(f.path, item.Ratio(info.Length), ct).ConfigureAwait(false);
+                        entry.State = entry.CurrentHash == f.hash ? UniLfsFileState.UpToDate : UniLfsFileState.Modified;
+                    }
                 }
                 result.Add(entry);
             }
@@ -78,13 +101,20 @@ namespace UniLFS.Editor
         /// </summary>
         public static async Task<UniLfsOpResult> TrackAsync(IEnumerable<string> paths, IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire("Track"))
+                return await TrackUnlockedAsync(paths, progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsOpResult> TrackUnlockedAsync(IEnumerable<string> paths, IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
             var list = paths.ToList();
+            var reporter = new UniLfsProgressReporter(progress);
             try
             {
-                int i = 0;
+                reporter.BeginPhase("Hashing", 0f, 1f, list.Count, 0);
                 foreach (var raw in list)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -94,18 +124,21 @@ namespace UniLFS.Editor
                     {
                         if (string.IsNullOrEmpty(reason)) reason = "the path is outside the project";
                         result.Errors.Add(raw + ": " + reason);
+                        reporter.Begin(raw, 0).Dispose();
                         continue;
                     }
                     string abs = UniLfsPaths.ToAbsolute(rel);
                     if (!File.Exists(abs))
                     {
                         result.Errors.Add(rel + ": file not found");
+                        reporter.Begin(rel, 0).Dispose();
                         continue;
                     }
-                    Report(progress, "Hashing", rel, i++, list.Count, 0f);
-                    var existing = manifest.Find(rel);
-                    string hash = await cache.GetHashAsync(rel, null, ct).ConfigureAwait(false);
                     long size = new FileInfo(abs).Length;
+                    var existing = manifest.Find(rel);
+                    string hash;
+                    using (var item = reporter.Begin(rel, size))
+                        hash = await cache.GetHashAsync(rel, item.Ratio(size), ct).ConfigureAwait(false);
                     if (existing == null)
                     {
                         manifest.Upsert(rel, hash, size);
@@ -122,6 +155,7 @@ namespace UniLFS.Editor
                         result.Skipped++;
                     }
                 }
+                reporter.Finish();
             }
             finally
             {
@@ -134,6 +168,12 @@ namespace UniLFS.Editor
 
         /// <summary>Removes files from the manifest. Files stay on disk.</summary>
         public static UniLfsOpResult Untrack(IEnumerable<string> paths)
+        {
+            using (UniLfsOperationLock.Acquire("Untrack"))
+                return UntrackUnlocked(paths);
+        }
+
+        static UniLfsOpResult UntrackUnlocked(IEnumerable<string> paths)
         {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
@@ -167,6 +207,12 @@ namespace UniLFS.Editor
         /// </summary>
         public static async Task<UniLfsOpResult> PushAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire("Push"))
+                return await PushUnlockedAsync(progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsOpResult> PushUnlockedAsync(IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
             var settings = UniLfsSettings.Load();
             var user = UniLfsUserSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
@@ -177,24 +223,30 @@ namespace UniLFS.Editor
             var current = new Dictionary<string, CurrentFile>();
             var presentOnRemote = new HashSet<string>();
             var checkFailed = new HashSet<string>();
+            var reporter = new UniLfsProgressReporter(progress);
+            var remote = UniLfsRemoteBlobCache.Load(settings);
 
             using (var provider = CreateProvider(settings, user))
             {
                 try
                 {
-                    int hashed = 0;
+                    reporter.BeginPhase("Hashing", 0f, PushHashSpan, manifest.files.Count, TotalSize(manifest.files));
                     foreach (var f in manifest.files)
                     {
                         ct.ThrowIfCancellationRequested();
-                        Report(progress, "Hashing", f.path, hashed++, manifest.files.Count, 0f);
                         string abs = UniLfsPaths.ToAbsolute(f.path);
                         if (!File.Exists(abs))
                         {
                             result.MissingLocal.Add(f.path);
+                            reporter.Begin(f.path, f.size).Dispose();
                             continue;
                         }
-                        string hash = await cache.GetHashAsync(f.path, null, ct).ConfigureAwait(false);
-                        current[f.path] = new CurrentFile { Hash = hash, Size = new FileInfo(abs).Length };
+                        long size = new FileInfo(abs).Length;
+                        using (var item = reporter.Begin(f.path, size))
+                        {
+                            string hash = await cache.GetHashAsync(f.path, item.Ratio(size), ct).ConfigureAwait(false);
+                            current[f.path] = new CurrentFile { Hash = hash, Size = size };
+                        }
                     }
 
                     var uploadSourceByHash = new Dictionary<string, string>();
@@ -203,28 +255,30 @@ namespace UniLFS.Editor
 
                     var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
 
-                    int checksDone = 0;
+                    reporter.BeginPhase("Checking remote", PushHashSpan, PushCheckSpan, hashes.Count, 0);
                     var checkTasks = hashes.Select(async h =>
                     {
                         await semaphore.WaitAsync(ct).ConfigureAwait(false);
-                        try
+                        using (reporter.Begin(uploadSourceByHash[h], 0))
                         {
-                            if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
-                                lock (presentOnRemote) presentOnRemote.Add(h);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            throw;
-                        }
-                        catch (Exception e)
-                        {
-                            lock (checkFailed) checkFailed.Add(h);
-                            lock (result.Errors) result.Errors.Add("check " + uploadSourceByHash[h] + ": " + e.Message);
-                        }
-                        finally
-                        {
-                            semaphore.Release();
-                            Report(progress, "Checking remote", uploadSourceByHash[h], Interlocked.Increment(ref checksDone), hashes.Count, 0f);
+                            try
+                            {
+                                if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
+                                    lock (presentOnRemote) presentOnRemote.Add(h);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
+                            }
+                            catch (Exception e)
+                            {
+                                lock (checkFailed) checkFailed.Add(h);
+                                lock (result.Errors) result.Errors.Add("check " + uploadSourceByHash[h] + ": " + e.Message);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                            }
                         }
                     }).ToList();
                     await Task.WhenAll(checkTasks).ConfigureAwait(false);
@@ -233,33 +287,37 @@ namespace UniLFS.Editor
                     lock (presentOnRemote)
                         toUpload = hashes.Where(h => !presentOnRemote.Contains(h) && !checkFailed.Contains(h)).ToList();
 
-                    int uploadsDone = 0;
+                    long uploadBytes = 0;
+                    foreach (var h in toUpload) uploadBytes += current[uploadSourceByHash[h]].Size;
+                    reporter.BeginPhase("Uploading", PushHashSpan + PushCheckSpan, 1f - PushHashSpan - PushCheckSpan, toUpload.Count, uploadBytes);
                     var uploadTasks = toUpload.Select(async h =>
                     {
                         await semaphore.WaitAsync(ct).ConfigureAwait(false);
                         string rel = uploadSourceByHash[h];
-                        try
+                        using (var item = reporter.Begin(rel, current[rel].Size))
                         {
-                            var byteProgress = ByteProgress(progress, "Uploading", rel, uploadsDone, toUpload.Count, current[rel].Size);
-                            await provider.UploadBlobAsync(h, UniLfsPaths.ToAbsolute(rel), byteProgress, ct).ConfigureAwait(false);
-                            lock (presentOnRemote) presentOnRemote.Add(h);
-                            Interlocked.Increment(ref result.Uploaded);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            throw;
-                        }
-                        catch (Exception e)
-                        {
-                            lock (result.Errors) result.Errors.Add("upload " + rel + ": " + e.Message);
-                        }
-                        finally
-                        {
-                            semaphore.Release();
-                            Report(progress, "Uploading", rel, Interlocked.Increment(ref uploadsDone), toUpload.Count, 1f);
+                            try
+                            {
+                                await provider.UploadBlobAsync(h, UniLfsPaths.ToAbsolute(rel), item, ct).ConfigureAwait(false);
+                                lock (presentOnRemote) presentOnRemote.Add(h);
+                                Interlocked.Increment(ref result.Uploaded);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
+                            }
+                            catch (Exception e)
+                            {
+                                lock (result.Errors) result.Errors.Add("upload " + rel + ": " + e.Message);
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                            }
                         }
                     }).ToList();
                     await Task.WhenAll(uploadTasks).ConfigureAwait(false);
+                    reporter.Finish();
                 }
                 finally
                 {
@@ -277,6 +335,10 @@ namespace UniLFS.Editor
                     manifest.Save(UniLfsPaths.ManifestPath);
                     UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, manifest.files.Select(f => f.path));
                     cache.Save();
+                    // Everything in presentOnRemote was either uploaded just now
+                    // or reported as already there, so both are proof.
+                    lock (presentOnRemote) remote.AddRange(presentOnRemote);
+                    remote.Save();
                 }
             }
             return result;
@@ -290,16 +352,24 @@ namespace UniLFS.Editor
         /// </summary>
         public static async Task<UniLfsOpResult> PullAsync(bool restoreModified = false, IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
+            using (UniLfsOperationLock.Acquire(restoreModified ? "Restore" : "Pull"))
+                return await PullUnlockedAsync(restoreModified, progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsOpResult> PullUnlockedAsync(bool restoreModified, IProgress<UniLfsProgress> progress, CancellationToken ct)
+        {
             var settings = UniLfsSettings.Load();
             var user = UniLfsUserSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
             if (manifest.files.Count == 0) return result;
+            var reporter = new UniLfsProgressReporter(progress);
+            var remote = UniLfsRemoteBlobCache.Load(settings);
 
             try
             {
-                var statuses = await StatusInternalAsync(manifest, cache, progress, ct).ConfigureAwait(false);
+                var statuses = await StatusInternalAsync(manifest, cache, remote, reporter, 0f, PullStatusSpan, ct).ConfigureAwait(false);
                 var targets = statuses.Where(s =>
                     s.State == UniLfsFileState.MissingLocal ||
                     (restoreModified && s.State == UniLfsFileState.Modified)).ToList();
@@ -308,57 +378,68 @@ namespace UniLFS.Editor
                     if (s.State == UniLfsFileState.UpToDate) result.Skipped++;
                     else if (s.State == UniLfsFileState.Modified && !restoreModified) result.KeptModified.Add(s.File.path);
                 }
-                if (targets.Count == 0) return result;
+                if (targets.Count == 0)
+                {
+                    reporter.Finish();
+                    return result;
+                }
 
                 using (var provider = CreateProvider(settings, user))
                 {
                     Directory.CreateDirectory(UniLfsPaths.TempDownloadDir);
                     var groups = targets.GroupBy(t => t.File.hash).ToList();
                     var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
-                    int groupsDone = 0;
+                    long downloadBytes = 0;
+                    foreach (var g in groups) downloadBytes += g.First().File.size;
+                    reporter.BeginPhase("Downloading", PullStatusSpan, 1f - PullStatusSpan, groups.Count, downloadBytes);
                     var tasks = groups.Select(async group =>
                     {
                         await semaphore.WaitAsync(ct).ConfigureAwait(false);
                         string hash = group.Key;
                         string tmpBlob = UniLfsPaths.Combine(UniLfsPaths.TempDownloadDir, hash + ".blob");
-                        string firstPath = group.First().File.path;
-                        try
+                        var first = group.First().File;
+                        using (var item = reporter.Begin(first.path, first.size))
                         {
-                            var byteProgress = ByteProgress(progress, "Downloading", firstPath, groupsDone, groups.Count, group.First().File.size);
-                            await provider.DownloadBlobAsync(hash, tmpBlob, byteProgress, ct).ConfigureAwait(false);
-                            foreach (var target in group)
+                            try
                             {
-                                string abs = UniLfsPaths.ToAbsolute(target.File.path);
-                                Directory.CreateDirectory(Path.GetDirectoryName(abs));
-                                if (File.Exists(abs)) File.SetAttributes(abs, FileAttributes.Normal);
-                                File.Copy(tmpBlob, abs, true);
-                                cache.RecordKnownFromDisk(target.File.path, hash);
-                                Interlocked.Increment(ref result.Downloaded);
-                            }
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            throw;
-                        }
-                        catch (Exception e)
-                        {
-                            lock (result.Errors)
+                                await provider.DownloadBlobAsync(hash, tmpBlob, item, ct).ConfigureAwait(false);
+                                // We just pulled it down, so it is definitely there.
+                                remote.Add(hash);
                                 foreach (var target in group)
-                                    result.Errors.Add("download " + target.File.path + ": " + e.Message);
-                        }
-                        finally
-                        {
-                            try { if (File.Exists(tmpBlob)) File.Delete(tmpBlob); } catch (Exception) { }
-                            semaphore.Release();
-                            Report(progress, "Downloading", firstPath, Interlocked.Increment(ref groupsDone), groups.Count, 1f);
+                                {
+                                    string abs = UniLfsPaths.ToAbsolute(target.File.path);
+                                    Directory.CreateDirectory(Path.GetDirectoryName(abs));
+                                    if (File.Exists(abs)) File.SetAttributes(abs, FileAttributes.Normal);
+                                    File.Copy(tmpBlob, abs, true);
+                                    cache.RecordKnownFromDisk(target.File.path, hash);
+                                    Interlocked.Increment(ref result.Downloaded);
+                                }
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
+                            }
+                            catch (Exception e)
+                            {
+                                lock (result.Errors)
+                                    foreach (var target in group)
+                                        result.Errors.Add("download " + target.File.path + ": " + e.Message);
+                            }
+                            finally
+                            {
+                                try { if (File.Exists(tmpBlob)) File.Delete(tmpBlob); } catch (Exception) { }
+                                semaphore.Release();
+                            }
                         }
                     }).ToList();
                     await Task.WhenAll(tasks).ConfigureAwait(false);
+                    reporter.Finish();
                 }
             }
             finally
             {
                 cache.Save();
+                remote.Save();
             }
             return result;
         }
@@ -386,37 +467,46 @@ namespace UniLFS.Editor
                 list.Add(f.path);
             }
 
+            var reporter = new UniLfsProgressReporter(progress);
+            var remote = UniLfsRemoteBlobCache.Load(settings);
             using (var provider = CreateProvider(settings, user))
             {
                 var hashes = pathsByHash.Keys.ToList();
                 var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
-                int done = 0;
+                reporter.BeginPhase("Verifying remote", 0f, 1f, hashes.Count, 0);
                 var tasks = hashes.Select(async h =>
                 {
                     await semaphore.WaitAsync(ct).ConfigureAwait(false);
-                    try
+                    using (reporter.Begin(pathsByHash[h][0], 0))
                     {
-                        if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
-                            Interlocked.Increment(ref result.Skipped);
-                        else
-                            lock (result.Errors)
-                                result.Errors.Add("missing on remote: " + string.Join(", ", pathsByHash[h]) + " (" + h.Substring(0, 8) + "...)");
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception e)
-                    {
-                        lock (result.Errors) result.Errors.Add("check " + string.Join(", ", pathsByHash[h]) + ": " + e.Message);
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                        Report(progress, "Verifying remote", h.Substring(0, 8), Interlocked.Increment(ref done), hashes.Count, 0f);
+                        try
+                        {
+                            if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
+                            {
+                                remote.Add(h);
+                                Interlocked.Increment(ref result.Skipped);
+                            }
+                            else
+                                lock (result.Errors)
+                                    result.Errors.Add("missing on remote: " + string.Join(", ", pathsByHash[h]) + " (" + h.Substring(0, 8) + "...)");
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception e)
+                        {
+                            lock (result.Errors) result.Errors.Add("check " + string.Join(", ", pathsByHash[h]) + ": " + e.Message);
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
                     }
                 }).ToList();
                 await Task.WhenAll(tasks).ConfigureAwait(false);
+                reporter.Finish();
+                remote.Save();
             }
             return result;
         }
@@ -433,47 +523,16 @@ namespace UniLFS.Editor
             return string.Join("\n", lines);
         }
 
-        static void Report(IProgress<UniLfsProgress> progress, string phase, string item, int done, int total, float itemProgress)
+        /// <summary>
+        /// Manifest sizes, used to weight a phase by bytes instead of file
+        /// count — otherwise a 4 KB file and a 4 GB file each move the bar by
+        /// the same jump.
+        /// </summary>
+        static long TotalSize(IEnumerable<UniLfsManifestFile> files)
         {
-            if (progress != null)
-                progress.Report(new UniLfsProgress { Phase = phase, Item = item, Done = done, Total = total, ItemProgress = itemProgress });
-        }
-
-        static IProgress<long> ByteProgress(IProgress<UniLfsProgress> outer, string phase, string item, int done, int total, long sizeBytes)
-        {
-            return outer == null ? null : new ByteProgressAdapter(outer, phase, item, done, total, sizeBytes);
-        }
-
-        sealed class ByteProgressAdapter : IProgress<long>
-        {
-            readonly IProgress<UniLfsProgress> _outer;
-            readonly string _phase;
-            readonly string _item;
-            readonly int _done;
-            readonly int _total;
-            readonly long _size;
-
-            public ByteProgressAdapter(IProgress<UniLfsProgress> outer, string phase, string item, int done, int total, long size)
-            {
-                _outer = outer;
-                _phase = phase;
-                _item = item;
-                _done = done;
-                _total = total;
-                _size = size;
-            }
-
-            public void Report(long bytes)
-            {
-                _outer.Report(new UniLfsProgress
-                {
-                    Phase = _phase,
-                    Item = _item,
-                    Done = _done,
-                    Total = _total,
-                    ItemProgress = _size > 0 ? (float)Math.Min(1.0, (double)bytes / _size) : 0f,
-                });
-            }
+            long total = 0;
+            foreach (var f in files) total += f.size;
+            return total;
         }
     }
 }

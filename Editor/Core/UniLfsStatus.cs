@@ -18,16 +18,46 @@ namespace UniLFS.Editor
         public UniLfsFileState State;
         public string CurrentHash;
         public long CurrentSize;
+        /// <summary>
+        /// Whether this machine has proof that the manifest's blob exists in
+        /// remote storage. State alone cannot answer this: a freshly tracked
+        /// file matches the manifest (UpToDate) while never having been
+        /// uploaded. See <see cref="UniLfsRemoteBlobCache"/>.
+        /// </summary>
+        public bool RemoteKnown;
     }
 
+    /// <summary>
+    /// A snapshot of an operation's progress, produced by
+    /// <see cref="UniLfsProgressReporter"/>. All fields describe the same
+    /// instant, so a UI never mixes numbers from two different workers.
+    /// </summary>
     public struct UniLfsProgress
     {
         public string Phase;
+        /// <summary>Path of the longest-running in-flight item (stable while it runs).</summary>
         public string Item;
+        /// <summary>Path of the item that just finished, if this report was triggered by one.</summary>
+        public string Completed;
+        /// <summary>Items finished in the current phase.</summary>
         public int Done;
+        /// <summary>Items in the current phase.</summary>
         public int Total;
         /// <summary>0..1 progress within the current item (byte progress for transfers).</summary>
         public float ItemProgress;
+        /// <summary>
+        /// 0..1 progress of the whole operation. Already weighted across phases
+        /// and, where sizes are known, by bytes rather than file count, and
+        /// clamped so parallel workers can never make it run backwards. Use
+        /// this instead of deriving a value from Done/Total.
+        /// </summary>
+        public float Fraction;
+        /// <summary>Ready-to-display one-line description of what is happening.</summary>
+        public string Label;
+        public long DoneBytes;
+        public long TotalBytes;
+        /// <summary>Transfers currently in flight.</summary>
+        public int Active;
     }
 
     public class UniLfsOpResult

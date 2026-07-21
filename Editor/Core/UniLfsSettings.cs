@@ -171,6 +171,60 @@ namespace UniLFS.Editor
     }
 
     /// <summary>
+    /// Answers "can this project push and pull yet?" in one place, so the
+    /// window banner, the settings page and the startup prompt cannot disagree
+    /// about what is still missing.
+    /// </summary>
+    public static class UniLfsProviderStatus
+    {
+        /// <summary>
+        /// What still has to be filled in before Push/Pull can work. Empty when
+        /// the provider is ready.
+        /// </summary>
+        public static System.Collections.Generic.List<string> MissingRequirements(UniLfsSettings settings, UniLfsUserSettings user)
+        {
+            var missing = new System.Collections.Generic.List<string>();
+            if (settings.ProviderKind == UniLfsProviderKind.GoogleDrive)
+            {
+                if (string.IsNullOrEmpty(UniLfsCredentials.DriveClientId(settings, user))) missing.Add("a client ID");
+                if (string.IsNullOrEmpty(UniLfsCredentials.DriveClientSecret(settings, user))) missing.Add("a client secret");
+                if (string.IsNullOrEmpty(settings.driveFolderId)) missing.Add("a folder ID");
+                if (string.IsNullOrEmpty(UniLfsCredentials.DriveRefreshToken(user))) missing.Add("a signed-in Google account");
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(settings.s3Endpoint)) missing.Add("an endpoint");
+                if (string.IsNullOrEmpty(settings.s3Bucket)) missing.Add("a bucket");
+                if (string.IsNullOrEmpty(UniLfsCredentials.S3AccessKeyId(user))) missing.Add("an access key ID");
+                if (string.IsNullOrEmpty(UniLfsCredentials.S3SecretAccessKey(user))) missing.Add("a secret access key");
+            }
+            return missing;
+        }
+
+        public static bool IsReady(UniLfsSettings settings, UniLfsUserSettings user)
+        {
+            return MissingRequirements(settings, user).Count == 0;
+        }
+
+        /// <summary>
+        /// True when Google Drive is fully configured and the only thing left is
+        /// the OAuth consent — the one case we can resolve without sending the
+        /// user to the settings page.
+        /// </summary>
+        public static bool NeedsGoogleSignInOnly(UniLfsSettings settings, UniLfsUserSettings user)
+        {
+            if (settings.ProviderKind != UniLfsProviderKind.GoogleDrive) return false;
+            var missing = MissingRequirements(settings, user);
+            return missing.Count == 1 && missing[0] == "a signed-in Google account";
+        }
+
+        public static string Describe(System.Collections.Generic.List<string> missing)
+        {
+            return string.Join(", ", missing.ToArray());
+        }
+    }
+
+    /// <summary>
     /// Resolves effective credentials with priority: environment variable
     /// (for CI) > per-user settings > project settings (where applicable).
     /// </summary>

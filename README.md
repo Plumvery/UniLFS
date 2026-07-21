@@ -134,7 +134,9 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 | Restore Modified | Overwrites locally modified files with the manifest version (asks first) |
 | Track / Untrack Selected | Same as the `Assets > UniLFS` context menu |
 
-File states: **up to date** (matches manifest) / **modified** (local edit not pushed) / **missing** (needs Pull).
+File states: **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but was never uploaded from this machine — typically tracked but not yet pushed) / **modified** (local edit not pushed) / **missing** (needs Pull).
+
+"Confirmed in storage" is recorded locally under `Library/UniLFS/` whenever a Push, Pull or Verify proves a blob exists, so the list costs no network calls. Deleting `Library/` just makes files show as **not pushed** until the next Push or Pull confirms them again.
 
 ## 🔄 Auto sync — no git hooks needed
 

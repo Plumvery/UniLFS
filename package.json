@@ -1,6 +1,6 @@
 {
   "name": "com.plumvery.unilfs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "UniLFS",
   "description": "Store large Unity assets in your own external storage (Cloudflare R2 / any S3-compatible service / Google Drive) instead of Git LFS. Tracked files are gitignored automatically and restored from a small manifest committed to git.",
   "unity": "2021.3",

@@ -62,7 +62,7 @@ namespace UniLFS.Editor
             try
             {
                 var result = await UniLfsCore.TrackAsync(files, new Progress<UniLfsProgress>(p =>
-                    Progress.Report(progressId, p.Total > 0 ? (float)p.Done / p.Total : 0f, p.Item)), CancellationToken.None);
+                    Progress.Report(progressId, p.Fraction, p.Label)), CancellationToken.None);
                 Progress.Finish(progressId, result.HasErrors ? Progress.Status.Failed : Progress.Status.Succeeded);
 
                 string message = "UniLFS: tracked " + result.TrackedNew + " new file(s), updated " + result.TrackedUpdated
@@ -74,6 +74,11 @@ namespace UniLFS.Editor
 
                 string hint = UniLfsCore.GitRemoveHint(result.NewlyTracked);
                 if (hint != null) Debug.Log("UniLFS: " + hint);
+            }
+            catch (UniLfsBusyException e)
+            {
+                Progress.Finish(progressId, Progress.Status.Canceled);
+                EditorUtility.DisplayDialog("UniLFS", e.Message, "OK");
             }
             catch (Exception e)
             {
@@ -112,8 +117,16 @@ namespace UniLFS.Editor
                 "Untrack", "Cancel"))
                 return;
 
-            var result = UniLfsCore.Untrack(tracked);
-            Debug.Log("UniLFS: untracked " + result.Untracked + " file(s). They remain on disk; run 'git add <file>' if you want git to manage them again.");
+            try
+            {
+                var result = UniLfsCore.Untrack(tracked);
+                Debug.Log("UniLFS: untracked " + result.Untracked + " file(s). They remain on disk; run 'git add <file>' if you want git to manage them again.");
+            }
+            catch (UniLfsBusyException e)
+            {
+                EditorUtility.DisplayDialog("UniLFS", e.Message, "OK");
+                return;
+            }
             if (onDone != null) onDone();
         }
 

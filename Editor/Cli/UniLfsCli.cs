@@ -1,0 +1,75 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using UnityEditor;
+using UnityEngine;
+
+namespace UniLFS.Editor
+{
+    /// <summary>
+    /// Batch mode entry points for CI, e.g.:
+    ///   Unity -batchmode -nographics -quit -projectPath . -executeMethod UniLFS.Editor.UniLfsCli.Pull
+    /// Credentials come from environment variables (see UniLfsCredentials).
+    /// A non-empty error list makes the method throw so the Unity process exits
+    /// with a non-zero code and fails the CI step.
+    /// </summary>
+    public static class UniLfsCli
+    {
+        public static void Pull()
+        {
+            bool restoreModified = Environment.GetEnvironmentVariable("UNILFS_PULL_RESTORE_MODIFIED") == "1";
+            Run("Pull", () => UniLfsCore.PullAsync(restoreModified, new ConsoleProgress(), CancellationToken.None), true);
+        }
+
+        public static void Push()
+        {
+            Run("Push", () => UniLfsCore.PushAsync(new ConsoleProgress(), CancellationToken.None), false);
+        }
+
+        public static void Status()
+        {
+            var statuses = UniLfsCore.StatusAsync(new ConsoleProgress(), CancellationToken.None).GetAwaiter().GetResult();
+            if (statuses.Count == 0)
+            {
+                Debug.Log("UniLFS: no tracked files.");
+                return;
+            }
+            var sb = new System.Text.StringBuilder("UniLFS status (" + statuses.Count + " tracked):\n");
+            foreach (var s in statuses)
+                sb.Append("  [").Append(s.State).Append("] ").Append(s.File.path).Append(" (").Append(s.File.size).Append(" bytes)\n");
+            Debug.Log(sb.ToString());
+        }
+
+        static void Run(string label, Func<Task<UniLfsOpResult>> operation, bool refreshAssets)
+        {
+            Debug.Log("UniLFS CLI: " + label + " starting...");
+            var result = operation().GetAwaiter().GetResult();
+            if (refreshAssets) AssetDatabase.Refresh();
+            Debug.Log("UniLFS CLI: " + label + " finished. uploaded=" + result.Uploaded
+                + " downloaded=" + result.Downloaded
+                + " upToDate=" + result.Skipped
+                + " missingLocal=" + result.MissingLocal.Count
+                + " keptModified=" + result.KeptModified.Count
+                + " errors=" + result.Errors.Count);
+            foreach (var path in result.MissingLocal) Debug.LogWarning("UniLFS CLI: missing locally: " + path);
+            foreach (var path in result.KeptModified) Debug.LogWarning("UniLFS CLI: locally modified, kept: " + path);
+            foreach (var error in result.Errors) Debug.LogError("UniLFS CLI: " + error);
+            if (result.HasErrors)
+                throw new Exception("UniLFS " + label + " finished with " + result.Errors.Count + " error(s); see the log above.");
+        }
+
+        /// <summary>Logs phase/item transitions only, so byte progress does not spam the log.</summary>
+        class ConsoleProgress : IProgress<UniLfsProgress>
+        {
+            string _lastKey;
+
+            public void Report(UniLfsProgress p)
+            {
+                string key = p.Phase + "|" + p.Item;
+                if (key == _lastKey) return;
+                _lastKey = key;
+                Debug.Log("UniLFS [" + p.Phase + "] (" + (p.Done + 1) + "/" + p.Total + ") " + p.Item);
+            }
+        }
+    }
+}

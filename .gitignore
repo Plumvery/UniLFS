@@ -11,3 +11,6 @@ Desktop.ini
 
 # Logs
 *.log
+
+# Local promo assets (published on the "promo" branch instead)
+/promo/

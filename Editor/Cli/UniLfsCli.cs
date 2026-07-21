@@ -26,6 +26,21 @@ namespace UniLFS.Editor
             Run("Push", () => UniLfsCore.PushAsync(new ConsoleProgress(), CancellationToken.None), false);
         }
 
+        /// <summary>
+        /// Fails (non-zero exit) when the manifest references blobs that do not
+        /// exist in remote storage - i.e. someone committed a manifest without
+        /// pushing. Needs no local asset files, only credentials.
+        /// </summary>
+        public static void Verify()
+        {
+            Debug.Log("UniLFS CLI: Verify starting...");
+            var result = UniLfsCore.VerifyRemoteAsync(new ConsoleProgress(), CancellationToken.None).GetAwaiter().GetResult();
+            Debug.Log("UniLFS CLI: Verify finished. present=" + result.Skipped + " problems=" + result.Errors.Count);
+            foreach (var error in result.Errors) Debug.LogError("UniLFS CLI: " + error);
+            if (result.HasErrors)
+                throw new Exception("UniLFS Verify failed: " + result.Errors.Count + " blob(s) missing or unreachable. Did someone forget to Push before committing the manifest?");
+        }
+
         public static void Status()
         {
             var statuses = UniLfsCore.StatusAsync(new ConsoleProgress(), CancellationToken.None).GetAwaiter().GetResult();

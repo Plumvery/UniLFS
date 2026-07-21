@@ -6,8 +6,58 @@ Builds need the real files on disk, so run a UniLFS **Pull** after checkout and 
 
 ```
 UniLFS.Editor.UniLfsCli.Pull     downloads everything missing; fails the process on any error
-UniLFS.Editor.UniLfsCli.Push     uploads local changes (rarely needed in CI)
+UniLFS.Editor.UniLfsCli.Push     uploads local changes (rarely needed in CI - see below)
+UniLFS.Editor.UniLfsCli.Verify   fails when the manifest references blobs missing from storage
 UniLFS.Editor.UniLfsCli.Status   logs the state of every tracked file
+```
+
+> **Why CI cannot upload for you:** tracked files are gitignored, so a CI
+> checkout only contains the manifest - the actual bytes exist solely on the
+> machine that edited them. Uploading therefore has to happen client-side
+> (this is true for git-lfs as well). UniLFS closes the gap from both sides:
+> the **Auto Push** editor setting uploads changes as soon as they happen, and
+> the **verify gate** below makes CI fail loudly if a manifest ever lands
+> without its blobs.
+
+## Verify gate without Unity
+
+[`Documentation~/ci/verify_manifest.py`](ci/verify_manifest.py) checks that every
+blob in `unilfs.manifest.json` exists in storage using only the Python 3
+standard library - no Unity license, no pip packages, runs in seconds.
+
+Copy the script into your project repo (e.g. `.github/scripts/`), or fetch it
+pinned to a UniLFS release in the workflow itself:
+
+```yaml
+name: UniLFS verify
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify UniLFS blobs exist in storage
+        env:
+          UNILFS_S3_ACCESS_KEY_ID: ${{ secrets.UNILFS_S3_ACCESS_KEY_ID }}
+          UNILFS_S3_SECRET_ACCESS_KEY: ${{ secrets.UNILFS_S3_SECRET_ACCESS_KEY }}
+        run: |
+          curl -fsSLO https://raw.githubusercontent.com/Plumvery/UniLFS/v0.2.0/Documentation~/ci/verify_manifest.py
+          python3 verify_manifest.py .
+```
+
+(For Google Drive set `UNILFS_DRIVE_CLIENT_ID` / `UNILFS_DRIVE_CLIENT_SECRET` /
+`UNILFS_DRIVE_REFRESH_TOKEN` instead. A read-only storage token is enough.)
+
+The same script works as an optional client-side **pre-push git hook**, blocking
+a `git push` whose manifest points at blobs that were never uploaded:
+
+```sh
+#!/bin/sh
+# .git/hooks/pre-push (chmod +x)
+python3 .github/scripts/verify_manifest.py . || {
+  echo "UniLFS: unpushed blobs - open Unity and press Push (or enable Auto Push)."
+  exit 1
+}
 ```
 
 Plain command line:

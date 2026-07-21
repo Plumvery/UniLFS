@@ -21,6 +21,16 @@ namespace UniLFS.Editor
         Auto,
     }
 
+    public enum UniLfsAutoPushMode
+    {
+        /// <summary>Never push automatically.</summary>
+        Off,
+        /// <summary>When modified tracked files are detected, show a dialog offering to push (default).</summary>
+        Ask,
+        /// <summary>Upload modified tracked files in the background as soon as they are detected.</summary>
+        Auto,
+    }
+
     /// <summary>
     /// Project-wide configuration, stored at ProjectSettings/UniLFSSettings.json
     /// and meant to be committed to git. Never put secrets here — credentials
@@ -38,9 +48,14 @@ namespace UniLFS.Editor
         public const string AutoPullAsk = "ask";
         public const string AutoPullAuto = "auto";
 
+        public const string AutoPushOff = "off";
+        public const string AutoPushAsk = "ask";
+        public const string AutoPushAuto = "auto";
+
         public int version = 1;
         public string provider = ProviderS3;
         public string autoPull = AutoPullAsk;
+        public string autoPush = AutoPushAsk;
 
         public string s3Endpoint = "";
         public string s3Bucket = "";
@@ -65,6 +80,16 @@ namespace UniLFS.Editor
                 if (autoPull == AutoPullOff) return UniLfsAutoPullMode.Off;
                 if (autoPull == AutoPullAuto) return UniLfsAutoPullMode.Auto;
                 return UniLfsAutoPullMode.Ask;
+            }
+        }
+
+        public UniLfsAutoPushMode AutoPushMode
+        {
+            get
+            {
+                if (autoPush == AutoPushOff) return UniLfsAutoPushMode.Off;
+                if (autoPush == AutoPushAuto) return UniLfsAutoPushMode.Auto;
+                return UniLfsAutoPushMode.Ask;
             }
         }
 

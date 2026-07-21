@@ -58,7 +58,7 @@ https://github.com/Plumvery/UniLFS.git
 }
 ```
 
-Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.1.0`
+Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.2.0`
 
 ## Quick start (Cloudflare R2)
 
@@ -74,7 +74,7 @@ Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.1.0`
 6. Commit `unilfs.manifest.json`, `.gitignore`, `ProjectSettings/UniLFSSettings.json` and the assets' `.meta` files.
    If the files were already committed to git before, run the `git rm --cached` commands UniLFS prints to the Console.
 
-Teammates then: clone → enter their credentials in Project Settings → open the project. UniLFS notices the missing files and offers to pull them (see [Auto pull](#auto-pull--no-git-hooks-needed)); `Window > UniLFS` → **Pull** works manually too.
+Teammates then: clone → enter their credentials in Project Settings → open the project. UniLFS notices the missing files and offers to pull them (see [Auto sync](#auto-sync--no-git-hooks-needed)); `Window > UniLFS` → **Pull** works manually too.
 
 Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md).
 
@@ -90,17 +90,17 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 
 File states: **up to date** (matches manifest) / **modified** (local edit not pushed) / **missing** (needs Pull).
 
-## Auto pull — no git hooks needed
+## Auto sync — no git hooks needed
 
-Whenever the editor starts or regains focus (which is exactly what happens right after you run `git pull` in a terminal or git client), UniLFS runs a cheap existence check. If the manifest changed and tracked files are missing, the **Auto Pull** setting decides what happens:
+Because the real bytes only exist on the machines that edit them, syncing has to start client-side (git-lfs works the same way). UniLFS automates both directions from inside the editor, and gives CI a cheap way to catch anything that slips through:
 
-| Mode | Behavior |
-|------|----------|
-| **Ask** (default) | A dialog offers to download the missing files |
-| **Automatic** | Missing files download immediately in the background (progress in the status bar) |
-| **Off** | Only a Console warning is logged |
+**Auto Pull** — whenever the editor starts or regains focus (exactly what happens right after you run `git pull`), a cheap existence check runs. If the manifest changed and tracked files are missing, the setting decides: **Ask** (default, dialog), **Automatic** (background download), or **Off** (Console warning only).
 
-Configure it in `Edit > Project Settings > UniLFS`. Each manifest state is handled at most once per editor session, so declining the dialog won't nag you on every focus change.
+**Auto Push** — when tracked files have local changes that were never uploaded, UniLFS notices (on focus changes, and in Automatic mode right after the asset is saved/imported) and offers to push — so blobs are already in storage by the time you commit the manifest. Same three modes, default **Ask**.
+
+**CI verify gate** — a [stdlib-only Python script](Documentation~/ci/verify_manifest.py) (no Unity license needed) fails your CI when a committed manifest references blobs missing from storage: the "forgot to push" case can't reach `main` unnoticed. Also available as `UniLfsCli.Verify` and as a pre-push hook — see [Documentation~/ci.md](Documentation~/ci.md).
+
+Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state is handled at most once per editor session, so declining a dialog won't nag you on every focus change.
 
 ## Configuration & credentials
 

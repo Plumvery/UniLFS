@@ -363,6 +363,64 @@ namespace UniLFS.Editor
             return result;
         }
 
+        /// <summary>
+        /// Checks that every blob the manifest references exists in remote
+        /// storage, without downloading anything. Missing blobs are reported in
+        /// Errors. Works from a bare checkout (local files are not needed), so
+        /// CI can gate merges on it.
+        /// </summary>
+        public static async Task<UniLfsOpResult> VerifyRemoteAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
+        {
+            var settings = UniLfsSettings.Load();
+            var user = UniLfsUserSettings.Load();
+            var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var result = new UniLfsOpResult();
+            if (manifest.files.Count == 0) return result;
+
+            var pathsByHash = new Dictionary<string, List<string>>();
+            foreach (var f in manifest.files)
+            {
+                List<string> list;
+                if (!pathsByHash.TryGetValue(f.hash, out list))
+                    pathsByHash[f.hash] = list = new List<string>();
+                list.Add(f.path);
+            }
+
+            using (var provider = CreateProvider(settings, user))
+            {
+                var hashes = pathsByHash.Keys.ToList();
+                var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
+                int done = 0;
+                var tasks = hashes.Select(async h =>
+                {
+                    await semaphore.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        if (await provider.BlobExistsAsync(h, ct).ConfigureAwait(false))
+                            Interlocked.Increment(ref result.Skipped);
+                        else
+                            lock (result.Errors)
+                                result.Errors.Add("missing on remote: " + string.Join(", ", pathsByHash[h]) + " (" + h.Substring(0, 8) + "...)");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        lock (result.Errors) result.Errors.Add("check " + string.Join(", ", pathsByHash[h]) + ": " + e.Message);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                        Report(progress, "Verifying remote", h.Substring(0, 8), Interlocked.Increment(ref done), hashes.Count, 0f);
+                    }
+                }).ToList();
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            return result;
+        }
+
         public static string GitRemoveHint(IEnumerable<string> newlyTrackedPaths)
         {
             var paths = newlyTrackedPaths.ToList();

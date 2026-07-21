@@ -55,6 +55,14 @@ namespace UniLFS.Editor
             _settings.autoPull = autoPullIndex == 0 ? UniLfsSettings.AutoPullOff
                 : autoPullIndex == 2 ? UniLfsSettings.AutoPullAuto
                 : UniLfsSettings.AutoPullAsk;
+            int autoPushIndex = (int)_settings.AutoPushMode;
+            autoPushIndex = EditorGUILayout.Popup(
+                new GUIContent("Auto Push", "What to do when tracked files have local changes that are not uploaded yet. Automatic uploads right after the asset is saved/imported"),
+                autoPushIndex,
+                new[] { "Off", "Ask (dialog)", "Automatic" });
+            _settings.autoPush = autoPushIndex == 0 ? UniLfsSettings.AutoPushOff
+                : autoPushIndex == 2 ? UniLfsSettings.AutoPushAuto
+                : UniLfsSettings.AutoPushAsk;
             if (EditorGUI.EndChangeCheck()) _settings.Save();
 
             EditorGUILayout.Space();

@@ -58,7 +58,7 @@ https://github.com/Plumvery/UniLFS.git
 }
 ```
 
-タグでバージョン固定: `https://github.com/Plumvery/UniLFS.git#v0.1.0`
+タグでバージョン固定: `https://github.com/Plumvery/UniLFS.git#v0.2.0`
 
 ## クイックスタート（Cloudflare R2）
 
@@ -74,7 +74,7 @@ https://github.com/Plumvery/UniLFS.git
 6. `unilfs.manifest.json`・`.gitignore`・`ProjectSettings/UniLFSSettings.json`・アセットの`.meta`をコミット。
    すでにgitにコミット済みだったファイルは、Consoleに表示される `git rm --cached` コマンドを実行してください。
 
-チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します（[自動Pull](#自動pull--gitフック不要)参照）。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
+チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します（[自動同期](#自動同期--gitフック不要)参照）。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
 
 Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md) へ。
 
@@ -90,17 +90,17 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 
 状態表示: **up to date**（マニフェストと一致）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
 
-## 自動Pull — gitフック不要
+## 自動同期 — gitフック不要
 
-エディタの起動時・フォーカス復帰時（＝ターミナルやgitクライアントで`git pull`した直後がまさにこれ）に、UniLFSが軽量な存在チェックを実行します。マニフェストが変わっていて追跡ファイルが欠けている場合、**Auto Pull** 設定に応じて動作します:
+実ファイルのバイト列は「編集したマシン」にしか存在しないため、同期は必ずクライアント側から始まります（git-lfsも同じ仕組みです）。UniLFSはエディタ内から双方向を自動化し、すり抜けはCIで検出します:
 
-| モード | 動作 |
-|--------|------|
-| **Ask**（デフォルト） | ダイアログでダウンロードするか確認 |
-| **Automatic** | 即座にバックグラウンドでダウンロード（進捗はステータスバー） |
-| **Off** | Consoleに警告を出すだけ |
+**Auto Pull** — エディタの起動時・フォーカス復帰時（＝`git pull`した直後）に軽量な存在チェックを実行。マニフェストが変わっていてファイルが欠けていたら、設定に応じて **Ask**（デフォルト・ダイアログ）/ **Automatic**（バックグラウンドでダウンロード）/ **Off**（Console警告のみ）。
 
-設定は `Edit > Project Settings > UniLFS`。同じマニフェスト状態につきエディタセッション中1回しか反応しないので、ダイアログで「Later」を選んでもフォーカスのたびに聞かれることはありません。
+**Auto Push** — 未アップロードのローカル変更を検知すると（フォーカス切替時、Automaticならアセット保存・インポート直後にも）Pushを提案。マニフェストをコミットする頃にはblobがストレージに揃っている状態を作ります。同じ3モードでデフォルトは **Ask**。
+
+**CI検証ゲート** — [Python標準ライブラリだけのスクリプト](Documentation~/ci/verify_manifest.py)（UnityライセンスもUnity自体も不要）が、コミットされたマニフェストの参照するblobがストレージに無い場合にCIを失敗させます。「Pushし忘れ」がmainに気づかれず入ることはありません。`UniLfsCli.Verify`やpre-pushフックとしても使えます — 詳細は [Documentation~/ci.md](Documentation~/ci.md)。
+
+モード設定は `Edit > Project Settings > UniLFS`。同じ状態につきエディタセッション中1回しか反応しないので、「Later」を選んでもフォーカスのたびに聞かれることはありません。
 
 ## 設定と認証情報
 

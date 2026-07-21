@@ -5,6 +5,14 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-21
+
+### Added
+
+- Auto Push: when tracked files have local changes that were never uploaded, UniLFS detects it (on focus changes; in Automatic mode also right after asset saves/imports) and asks or uploads in the background (configurable: Ask / Automatic / Off).
+- `UniLFS.Editor.UniLfsCli.Verify`: batch-mode check that fails when the manifest references blobs missing from remote storage.
+- `Documentation~/ci/verify_manifest.py`: the same verify gate without Unity (Python stdlib only) for CI workflows and optional pre-push git hooks, for both S3-compatible and Google Drive providers.
+
 ## [0.1.0] - 2026-07-21
 
 ### Added

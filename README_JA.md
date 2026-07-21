@@ -74,7 +74,7 @@ https://github.com/Plumvery/UniLFS.git
 6. `unilfs.manifest.json`・`.gitignore`・`ProjectSettings/UniLFSSettings.json`・アセットの`.meta`をコミット。
    すでにgitにコミット済みだったファイルは、Consoleに表示される `git rm --cached` コマンドを実行してください。
 
-チームメイトは「clone → Project Settingsで自分の認証情報を入力 → `Window > UniLFS` → **Pull**」。追跡ファイルが欠けたままプロジェクトを開くと、Consoleに警告も出ます。
+チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します（[自動Pull](#自動pull--gitフック不要)参照）。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
 
 Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md) へ。
 
@@ -89,6 +89,18 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 | Track / Untrack Selected | `Assets > UniLFS` の右クリックメニューと同じ |
 
 状態表示: **up to date**（マニフェストと一致）/ **modified**（未Pushのローカル変更あり）/ **missing**（Pullが必要）。
+
+## 自動Pull — gitフック不要
+
+エディタの起動時・フォーカス復帰時（＝ターミナルやgitクライアントで`git pull`した直後がまさにこれ）に、UniLFSが軽量な存在チェックを実行します。マニフェストが変わっていて追跡ファイルが欠けている場合、**Auto Pull** 設定に応じて動作します:
+
+| モード | 動作 |
+|--------|------|
+| **Ask**（デフォルト） | ダイアログでダウンロードするか確認 |
+| **Automatic** | 即座にバックグラウンドでダウンロード（進捗はステータスバー） |
+| **Off** | Consoleに警告を出すだけ |
+
+設定は `Edit > Project Settings > UniLFS`。同じマニフェスト状態につきエディタセッション中1回しか反応しないので、ダイアログで「Later」を選んでもフォーカスのたびに聞かれることはありません。
 
 ## 設定と認証情報
 

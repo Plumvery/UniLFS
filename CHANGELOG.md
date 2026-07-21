@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - S3-compatible storage provider (Cloudflare R2, Amazon S3, MinIO, ...) with a dependency-free AWS Signature V4 implementation.
 - Google Drive storage provider with OAuth loopback sign-in (PKCE) and resumable uploads.
 - `Window > UniLFS` management window: status, Push, Pull, Restore.
+- Auto Pull without git hooks: on editor start / focus regain after the manifest changed (e.g. right after `git pull`), UniLFS asks to download missing files (configurable: Ask / Automatic / Off).
 - `Project Settings > UniLFS` configuration UI with per-user credential storage and connection test.
 - Content-addressed remote layout (`objects/<aa>/<sha256>`) with hash-verified downloads.
 - Batch mode CLI entry points for CI: `UniLFS.Editor.UniLfsCli.Pull` / `Push` / `Status`.

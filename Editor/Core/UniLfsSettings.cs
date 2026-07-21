@@ -11,6 +11,16 @@ namespace UniLFS.Editor
         GoogleDrive,
     }
 
+    public enum UniLfsAutoPullMode
+    {
+        /// <summary>Only log a Console warning when tracked files are missing.</summary>
+        Off,
+        /// <summary>Show a dialog offering to pull (default).</summary>
+        Ask,
+        /// <summary>Pull missing files immediately without asking.</summary>
+        Auto,
+    }
+
     /// <summary>
     /// Project-wide configuration, stored at ProjectSettings/UniLFSSettings.json
     /// and meant to be committed to git. Never put secrets here — credentials
@@ -24,8 +34,13 @@ namespace UniLFS.Editor
         public const string ProviderS3 = "s3";
         public const string ProviderGoogleDrive = "googledrive";
 
+        public const string AutoPullOff = "off";
+        public const string AutoPullAsk = "ask";
+        public const string AutoPullAuto = "auto";
+
         public int version = 1;
         public string provider = ProviderS3;
+        public string autoPull = AutoPullAsk;
 
         public string s3Endpoint = "";
         public string s3Bucket = "";
@@ -41,6 +56,16 @@ namespace UniLFS.Editor
         public UniLfsProviderKind ProviderKind
         {
             get { return provider == ProviderGoogleDrive ? UniLfsProviderKind.GoogleDrive : UniLfsProviderKind.S3Compatible; }
+        }
+
+        public UniLfsAutoPullMode AutoPullMode
+        {
+            get
+            {
+                if (autoPull == AutoPullOff) return UniLfsAutoPullMode.Off;
+                if (autoPull == AutoPullAuto) return UniLfsAutoPullMode.Auto;
+                return UniLfsAutoPullMode.Ask;
+            }
         }
 
         public static UniLfsSettings Load()

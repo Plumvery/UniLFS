@@ -74,7 +74,7 @@ Pin a version with a tag: `https://github.com/Plumvery/UniLFS.git#v0.1.0`
 6. Commit `unilfs.manifest.json`, `.gitignore`, `ProjectSettings/UniLFSSettings.json` and the assets' `.meta` files.
    If the files were already committed to git before, run the `git rm --cached` commands UniLFS prints to the Console.
 
-Teammates then: clone → enter their credentials in Project Settings → `Window > UniLFS` → **Pull**. (A Console warning also reminds anyone opening a project with missing tracked files.)
+Teammates then: clone → enter their credentials in Project Settings → open the project. UniLFS notices the missing files and offers to pull them (see [Auto pull](#auto-pull--no-git-hooks-needed)); `Window > UniLFS` → **Pull** works manually too.
 
 Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/setup-google-drive.md).
 
@@ -89,6 +89,18 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 | Track / Untrack Selected | Same as the `Assets > UniLFS` context menu |
 
 File states: **up to date** (matches manifest) / **modified** (local edit not pushed) / **missing** (needs Pull).
+
+## Auto pull — no git hooks needed
+
+Whenever the editor starts or regains focus (which is exactly what happens right after you run `git pull` in a terminal or git client), UniLFS runs a cheap existence check. If the manifest changed and tracked files are missing, the **Auto Pull** setting decides what happens:
+
+| Mode | Behavior |
+|------|----------|
+| **Ask** (default) | A dialog offers to download the missing files |
+| **Automatic** | Missing files download immediately in the background (progress in the status bar) |
+| **Off** | Only a Console warning is logged |
+
+Configure it in `Edit > Project Settings > UniLFS`. Each manifest state is handled at most once per editor session, so declining the dialog won't nag you on every focus change.
 
 ## Configuration & credentials
 

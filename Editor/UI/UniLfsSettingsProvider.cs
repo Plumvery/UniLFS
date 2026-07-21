@@ -47,6 +47,14 @@ namespace UniLFS.Editor
                 new[] { "S3 compatible (Cloudflare R2 / S3 / MinIO)", "Google Drive" });
             _settings.provider = providerIndex == 1 ? UniLfsSettings.ProviderGoogleDrive : UniLfsSettings.ProviderS3;
             _settings.parallelTransfers = EditorGUILayout.IntSlider("Parallel Transfers", _settings.parallelTransfers, 1, 16);
+            int autoPullIndex = (int)_settings.AutoPullMode;
+            autoPullIndex = EditorGUILayout.Popup(
+                new GUIContent("Auto Pull", "What to do when the editor regains focus, the manifest changed (e.g. after a git pull) and tracked files are missing"),
+                autoPullIndex,
+                new[] { "Off (warn in Console)", "Ask (dialog)", "Automatic" });
+            _settings.autoPull = autoPullIndex == 0 ? UniLfsSettings.AutoPullOff
+                : autoPullIndex == 2 ? UniLfsSettings.AutoPullAuto
+                : UniLfsSettings.AutoPullAsk;
             if (EditorGUI.EndChangeCheck()) _settings.Save();
 
             EditorGUILayout.Space();

@@ -78,8 +78,13 @@ namespace UniLFS.Editor
 
             int missing = 0;
             foreach (var f in manifest.files)
-                if (!File.Exists(UniLfsPaths.ToAbsolute(f.path)))
+            {
+                string abs = UniLfsPaths.ToAbsolute(f.path);
+                // A placeholder means the guard stood in for content that never
+                // arrived, so it counts as missing - Pull is what resolves it.
+                if (!File.Exists(abs) || UniLfsPlaceholder.IsPlaceholder(abs))
                     missing++;
+            }
             if (missing == 0) return;
 
             switch (UniLfsSettings.Load().AutoPullMode)

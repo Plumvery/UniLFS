@@ -126,8 +126,11 @@ namespace UniLFS.Editor
                 var info = new FileInfo(UniLfsPaths.ToAbsolute(f.path));
                 using (var item = reporter.Begin(f.path, info.Exists ? info.Length : f.size))
                 {
-                    if (!info.Exists)
+                    if (!info.Exists || UniLfsPlaceholder.IsPlaceholder(info.FullName))
                     {
+                        // A placeholder stands in for content that is not here
+                        // yet, so it has to read as missing. Reading as Modified
+                        // would both hide it from Pull and offer it to Push.
                         entry.State = UniLfsFileState.MissingLocal;
                     }
                     else
@@ -186,15 +189,22 @@ namespace UniLFS.Editor
                     string hash;
                     using (var item = reporter.Begin(rel, size))
                         hash = await cache.GetHashAsync(rel, item.Ratio(size), ct).ConfigureAwait(false);
+                    // Recorded so a clone, which gets the .meta but not the
+                    // gitignored asset, can put the GUID back instead of
+                    // letting Unity mint a new one. See UniLfsMetaGuard.
+                    string guid = UniLfsMetaFile.ReadGuid(UniLfsMetaFile.PathFor(abs));
                     if (existing == null)
                     {
-                        manifest.Upsert(rel, hash, size);
+                        manifest.Upsert(rel, hash, size).guid = guid;
                         result.TrackedNew++;
                         result.NewlyTracked.Add(rel);
                     }
-                    else if (existing.hash != hash || existing.size != size)
+                    else if (existing.hash != hash || existing.size != size
+                             || (guid != null && existing.guid != guid))
                     {
-                        manifest.Upsert(rel, hash, size);
+                        // Never clears a recorded GUID: a missing .meta at this
+                        // moment says nothing about the one everyone else has.
+                        manifest.Upsert(rel, hash, size).guid = guid ?? existing.guid;
                         result.TrackedUpdated++;
                     }
                     else
@@ -232,6 +242,10 @@ namespace UniLFS.Editor
                 if (manifest.Remove(rel))
                 {
                     cache.Forget(rel);
+                    // The path leaves the managed .gitignore block with this
+                    // call, so a placeholder left behind would stop being
+                    // ignored and could be committed as if it were the asset.
+                    UniLfsPlaceholder.Clear(UniLfsPaths.ToAbsolute(rel));
                     result.Untracked++;
                 }
             }
@@ -282,13 +296,18 @@ namespace UniLFS.Editor
                     {
                         ct.ThrowIfCancellationRequested();
                         string abs = UniLfsPaths.ToAbsolute(f.path);
-                        if (!File.Exists(abs))
+                        var info = new FileInfo(abs);
+                        // Placeholders must never reach the upload path: the
+                        // manifest is rewritten from what was hashed here, so
+                        // pushing one would point every clone at the stand-in
+                        // and orphan the real blob.
+                        if (!info.Exists || UniLfsPlaceholder.IsPlaceholder(abs))
                         {
                             result.MissingLocal.Add(f.path);
                             reporter.Begin(f.path, f.size).Dispose();
                             continue;
                         }
-                        long size = new FileInfo(abs).Length;
+                        long size = info.Length;
                         using (var item = reporter.Begin(f.path, size))
                         {
                             string hash = await cache.GetHashAsync(f.path, item.Ratio(size), ct).ConfigureAwait(false);
@@ -456,6 +475,12 @@ namespace UniLFS.Editor
                                 {
                                     string abs = UniLfsPaths.ToAbsolute(target.File.path);
                                     Directory.CreateDirectory(Path.GetDirectoryName(abs));
+                                    // Put a discarded .meta back before the
+                                    // asset lands. Once the asset is there, the
+                                    // next import mints a fresh GUID for it and
+                                    // every reference to the old one breaks.
+                                    // No-ops when a .meta is already present.
+                                    UniLfsMetaFile.WriteMinimal(UniLfsMetaFile.PathFor(abs), target.File.guid);
                                     if (File.Exists(abs)) File.SetAttributes(abs, FileAttributes.Normal);
                                     File.Copy(tmpBlob, abs, true);
                                     cache.RecordKnownFromDisk(target.File.path, hash);

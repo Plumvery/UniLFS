@@ -12,6 +12,16 @@ namespace UniLFS.Editor
         public string path;
         public string hash;
         public long size;
+        /// <summary>
+        /// The asset's Unity GUID, copied from its .meta at track time.
+        ///
+        /// Tracked files are gitignored, so a clone has the .meta but not the
+        /// asset - and Unity discards a .meta it cannot match to an asset,
+        /// taking the GUID (and every reference to it) with it. Recording the
+        /// GUID next to the hash means it can be put back. Empty for entries
+        /// written by UniLFS 0.3.1 and earlier.
+        /// </summary>
+        public string guid;
     }
 
     /// <summary>
@@ -94,7 +104,12 @@ namespace UniLFS.Editor
                 var f = files[i];
                 sb.Append("    {\"path\": ").Append(UniLfsJsonUtil.Quote(f.path))
                   .Append(", \"hash\": ").Append(UniLfsJsonUtil.Quote(f.hash))
-                  .Append(", \"size\": ").Append(f.size).Append("}");
+                  .Append(", \"size\": ").Append(f.size);
+                // Omitted rather than written empty, so manifests from before
+                // GUIDs were recorded round-trip unchanged.
+                if (!string.IsNullOrEmpty(f.guid))
+                    sb.Append(", \"guid\": ").Append(UniLfsJsonUtil.Quote(f.guid));
+                sb.Append("}");
             }
             sb.Append(files.Count > 0 ? "\n  ]\n" : "]\n");
             sb.Append("}\n");

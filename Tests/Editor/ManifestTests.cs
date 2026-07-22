@@ -92,6 +92,39 @@ namespace UniLFS.Editor.Tests
         }
 
         [Test]
+        public void Guid_RoundTripsThroughSaveAndLoad()
+        {
+            var manifest = new UniLfsManifest();
+            manifest.Upsert("Assets/Big/clip.mp4", new string('a', 64), 1L).guid = "06ab76e82690a410dbcf6a86d888a12e";
+            string path = Path.Combine(_dir, "m.json");
+            manifest.Save(path);
+
+            var loaded = UniLfsManifest.Load(path);
+            Assert.AreEqual("06ab76e82690a410dbcf6a86d888a12e", loaded.Find("Assets/Big/clip.mp4").guid);
+        }
+
+        [Test]
+        public void Guid_IsOmittedWhenNotRecorded()
+        {
+            // Manifests written before GUIDs were recorded have to round-trip
+            // byte for byte, or upgrading the package shows up as a diff on
+            // every entry.
+            var manifest = new UniLfsManifest();
+            manifest.Upsert("Assets/a.png", new string('1', 64), 1);
+            StringAssert.DoesNotContain("guid", manifest.ToJsonString());
+        }
+
+        [Test]
+        public void Upsert_KeepsARecordedGuidWhenTheHashChanges()
+        {
+            var manifest = new UniLfsManifest();
+            manifest.Upsert("Assets/a.png", new string('1', 64), 1).guid = "06ab76e82690a410dbcf6a86d888a12e";
+            manifest.Upsert("Assets/a.png", new string('2', 64), 2);
+            Assert.AreEqual("06ab76e82690a410dbcf6a86d888a12e", manifest.files[0].guid);
+            Assert.AreEqual(new string('2', 64), manifest.files[0].hash);
+        }
+
+        [Test]
         public void Save_IsParseableAfterEscaping()
         {
             var manifest = new UniLfsManifest();

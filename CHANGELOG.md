@@ -5,6 +5,25 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-07-22
+
+### Fixed
+
+- Tracked assets no longer come back under a new GUID when the project is opened without their content on disk — which silently broke every scene, prefab and Addressables reference pointing at them. Tracked files are gitignored, so a clone gets `Foo.mp4.meta` but not `Foo.mp4`; Unity discards a `.meta` it cannot match to an asset, and mints a fresh GUID once Pull finally brings the file back. Auto Pull could never prevent it: it runs from `EditorApplication.delayCall`, long after. The manifest now records each tracked file's GUID, and UniLFS puts a discarded `.meta` back from that record before the asset lands, so the import reuses the identity the rest of the project already references.
+- `README.md` promised "GUIDs and references never break". That was the intent, not the behaviour.
+
+### Added
+
+- The manifest records each tracked file's Unity GUID next to its hash, and Pull recreates a missing `.meta` from it before writing the asset. Entries written by earlier versions carry no GUID — re-run Track on them to record one, or a clone still has nothing to restore from.
+
+  A rebuilt `.meta` carries the GUID but not the original import settings; Unity fills those back in with defaults. Restoring the `.meta` from git is the better outcome, and UniLFS now warns and says so whenever it had to rebuild one. GUID first because the trade is not symmetric: a wrong GUID breaks references, while default import settings merely look wrong and can be set again.
+- A placeholder is written at every tracked path whose content is missing. It does *not* win the race against Unity's startup scan — `[InitializeOnLoadMethod]` is the earliest hook managed code gets, and measured on 2022.3 the scan has already discarded orphaned `.meta` files by the time it runs, from a warm `Library` and a deleted one alike. What the placeholder does is keep the window shut afterwards: with an asset at the path, the restored `.meta` survives later refreshes instead of being discarded and rebuilt on every one, and Pull overwrites the placeholder in place under the same GUID. Expect import errors for those paths until Pull runs — the files really are not there yet.
+- A `.meta` whose GUID disagrees with the manifest is reported as an error on editor start. It is the signature of this damage having already happened, and is otherwise invisible until something fails to load at runtime.
+
+### Changed
+
+- Placeholders read as **missing**, never as a local modification, everywhere UniLFS looks at a tracked file. Push skips them outright: it rewrites the manifest from whatever it just hashed, so uploading a stand-in would have pointed every clone at it and orphaned the real blob. Untrack clears any placeholder left at the path, which stops being gitignored the moment the entry is removed.
+
 ## [0.3.1] - 2026-07-22
 
 ### Changed

@@ -111,6 +111,42 @@ namespace UniLFS.Editor.Tests
         }
 
         [Test]
+        public void IsPlaceholder_FalseWhenOnlyTheMarkerMatches()
+        {
+            // Calling something a placeholder is calling it absent, and Pull
+            // overwrites what is absent. A real tracked file that merely starts
+            // with the marker must not be destroyed by its own first line.
+            string path = Path_("decoy.mp4");
+            File.WriteAllText(path, UniLfsPlaceholder.Marker + "\nthis is not a placeholder\nat all\n");
+            Assert.IsFalse(UniLfsPlaceholder.IsPlaceholder(path));
+        }
+
+        [Test]
+        public void IsPlaceholder_FalseWhenTheHeaderIsIncomplete()
+        {
+            string noHash = Path_("nohash.mp4");
+            File.WriteAllText(noHash, UniLfsPlaceholder.Marker + "\nsize: 123\nsha256: " + new string('a', 64) + "\n");
+            Assert.IsFalse(UniLfsPlaceholder.IsPlaceholder(noHash), "lines must be in order");
+
+            string badSize = Path_("badsize.mp4");
+            File.WriteAllText(badSize, UniLfsPlaceholder.Marker + "\nsha256: " + new string('a', 64) + "\nsize: enormous\n");
+            Assert.IsFalse(UniLfsPlaceholder.IsPlaceholder(badSize), "the size has to parse");
+
+            string truncated = Path_("truncated.mp4");
+            File.WriteAllText(truncated, UniLfsPlaceholder.Marker + "\nsha256: " + new string('a', 64) + "\n");
+            Assert.IsFalse(UniLfsPlaceholder.IsPlaceholder(truncated), "a missing size line is not a placeholder");
+        }
+
+        [Test]
+        public void IsPlaceholder_TrueForWhatWriteActuallyProduces()
+        {
+            // Guards the pair: tightening the check must not orphan the writer.
+            string path = Path_("roundtrip.mp4");
+            UniLfsPlaceholder.Write(path, new string('a', 64), 20431463L);
+            Assert.IsTrue(UniLfsPlaceholder.IsPlaceholder(path));
+        }
+
+        [Test]
         public void Clear_RemovesPlaceholderButKeepsRealContent()
         {
             string placeholder = Path_("stand-in.mp4");

@@ -29,7 +29,7 @@ namespace UniLFS.Editor
     /// </summary>
     public static class UniLfsPlaceholder
     {
-        /// <summary>First bytes of every placeholder. ASCII, so the probe needs no decoding.</summary>
+        /// <summary>First line of every placeholder.</summary>
         public const string Marker = "UNILFS-PLACEHOLDER";
 
         /// <summary>
@@ -39,7 +39,8 @@ namespace UniLFS.Editor
         /// </summary>
         public const int MaxLength = 4096;
 
-        static readonly byte[] MarkerBytes = Encoding.ASCII.GetBytes(Marker);
+        const string HashPrefix = "sha256: ";
+        const string SizePrefix = "size: ";
 
         /// <summary>
         /// Writes a placeholder, creating parent directories as needed. Returns
@@ -56,8 +57,8 @@ namespace UniLFS.Editor
 
             var sb = new StringBuilder();
             sb.Append(Marker).Append('\n');
-            sb.Append("sha256: ").Append(hash ?? "").Append('\n');
-            sb.Append("size: ").Append(realSize).Append('\n');
+            sb.Append(HashPrefix).Append(hash ?? "").Append('\n');
+            sb.Append(SizePrefix).Append(realSize).Append('\n');
             sb.Append('\n');
             sb.Append("UniLFS wrote this stand-in because the real file is not on disk yet.\n");
             sb.Append("It exists so Unity keeps the .meta next to it - an orphaned .meta loses\n");
@@ -74,6 +75,12 @@ namespace UniLFS.Editor
         /// content. Safe to call from worker threads and on paths that do not
         /// exist.
         ///
+        /// The whole header has to be there and parse, not just the marker.
+        /// Saying "placeholder" is saying "this content is not here", and Pull
+        /// overwrites what is not here — so a real tracked file under
+        /// <see cref="MaxLength"/> that merely happened to start with the marker
+        /// would be destroyed by its own contents.
+        ///
         /// Deliberately the only signature: an overload taking a FileInfo would
         /// save one stat per entry and make every <c>IsPlaceholder(null)</c>
         /// ambiguous to compile, which is a bad trade for a check that runs over
@@ -86,22 +93,20 @@ namespace UniLFS.Editor
             {
                 var info = new FileInfo(absPath);
                 if (!info.Exists) return false;
-                if (info.Length < MarkerBytes.Length || info.Length > MaxLength) return false;
+                if (info.Length < Marker.Length || info.Length > MaxLength) return false;
 
-                using (var stream = new FileStream(info.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    var head = new byte[MarkerBytes.Length];
-                    int read = 0;
-                    while (read < head.Length)
-                    {
-                        int n = stream.Read(head, read, head.Length - read);
-                        if (n <= 0) return false;
-                        read += n;
-                    }
-                    for (int i = 0; i < head.Length; i++)
-                        if (head[i] != MarkerBytes[i]) return false;
-                    return true;
-                }
+                string text;
+                using (var stream = new FileStream(absPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    text = reader.ReadToEnd();
+
+                var lines = text.Split('\n');
+                if (lines.Length < 3) return false;
+                if (lines[0].TrimEnd('\r') != Marker) return false;
+                if (!lines[1].StartsWith(HashPrefix, StringComparison.Ordinal)) return false;
+                if (!lines[2].StartsWith(SizePrefix, StringComparison.Ordinal)) return false;
+                long recordedSize;
+                return long.TryParse(lines[2].Substring(SizePrefix.Length).TrimEnd('\r').Trim(), out recordedSize);
             }
             catch (Exception)
             {

@@ -44,6 +44,8 @@ namespace UniLFS.Editor
             public int MetaFilesRestored;
             public List<string> MetaMissingNoGuid = new List<string>();
             public List<string> GuidDrift = new List<string>();
+            /// <summary>Manifest entries refused because they do not name a path inside the project.</summary>
+            public List<string> RejectedPaths = new List<string>();
         }
 
         [InitializeOnLoadMethod]
@@ -86,18 +88,35 @@ namespace UniLFS.Editor
             foreach (var f in manifest.files)
             {
                 string abs = UniLfsPaths.ToAbsolute(f.path);
-                string metaPath = UniLfsMetaFile.PathFor(abs);
-                bool contentPresent = File.Exists(abs) && !UniLfsPlaceholder.IsPlaceholder(abs);
 
-                if (contentPresent)
+                // The manifest is committed, hand-editable and merge-resolved,
+                // and this runs unattended at editor start. An entry that
+                // escapes the project - ".." segments, an absolute path - would
+                // otherwise have us create files outside it with nobody asking
+                // for anything. ToAbsolute only concatenates, and the trackable
+                // check has no opinion on "..", so both are needed.
+                string reason;
+                if (!UniLfsPaths.IsTrackablePath(f.path, out reason) ||
+                    UniLfsPaths.ToProjectRelative(abs) == null)
                 {
-                    // Nothing to protect, but this is the cheapest place to
-                    // notice that the damage already happened on an earlier run.
-                    string onDisk = UniLfsMetaFile.ReadGuid(metaPath);
-                    if (UniLfsMetaFile.IsValidGuid(f.guid) && onDisk != null && onDisk != f.guid)
-                        report.GuidDrift.Add(f.path);
+                    report.RejectedPaths.Add(f.path);
                     continue;
                 }
+
+                string metaPath = UniLfsMetaFile.PathFor(abs);
+
+                // Checked before anything branches on whether the content is
+                // here: a tracked file that is missing *and* whose .meta already
+                // carries the wrong GUID is exactly the damage this is meant to
+                // surface, and nothing downstream would. Pull's WriteMinimal
+                // no-ops on an existing .meta, so the asset would come back
+                // under that wrong GUID in silence.
+                string onDisk = UniLfsMetaFile.ReadGuid(metaPath);
+                if (UniLfsMetaFile.IsValidGuid(f.guid) && onDisk != null && onDisk != f.guid)
+                    report.GuidDrift.Add(f.path);
+
+                // Real content is here: nothing to protect.
+                if (File.Exists(abs) && !UniLfsPlaceholder.IsPlaceholder(abs)) continue;
 
                 if (!File.Exists(metaPath))
                 {
@@ -143,6 +162,14 @@ namespace UniLFS.Editor
                     + " manifest, so references still resolve. Import settings were not part of that and are"
                     + " back to their defaults - restore those .meta files from git (git checkout -- <path>.meta)"
                     + " if they had any.");
+            }
+
+            if (report.RejectedPaths.Count > 0)
+            {
+                Debug.LogError("UniLFS: " + report.RejectedPaths.Count
+                    + " manifest entry/entries do not name a path inside this project and were ignored."
+                    + " Check unilfs.manifest.json - this is what a bad merge or a hand-edit looks like:\n- "
+                    + string.Join("\n- ", report.RejectedPaths.ToArray()));
             }
 
             if (report.MetaMissingNoGuid.Count > 0)

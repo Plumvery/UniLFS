@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Manifest entries that do not name a path inside the project are refused with an error instead of being acted on. The manifest is committed, hand-editable and merge-resolved, and the startup guard writes files without anyone asking — so a `../..` entry from a bad merge would otherwise have created files outside the project on editor start.
 - Placeholders read as **missing**, never as a local modification, everywhere UniLFS looks at a tracked file. Push skips them outright: it rewrites the manifest from whatever it just hashed, so uploading a stand-in would have pointed every clone at it and orphaned the real blob. Untrack clears any placeholder left at the path, which stops being gitignored the moment the entry is removed.
 
 ## [0.3.1] - 2026-07-22

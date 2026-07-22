@@ -27,6 +27,17 @@ namespace UniLFS.Editor
     /// </summary>
     public class UniLfsRemoteBlobCache
     {
+        /// <summary>
+        /// How many confirmations for blobs outside the current manifest to
+        /// keep. Hashes come back — a revert, a branch switch, or a teammate's
+        /// change being undone all point the manifest at something it named
+        /// before — and each confirmation costs a network round trip to earn
+        /// again. Keeping a window of them is what stops a file that never left
+        /// storage from reading as "not pushed" the moment the manifest moves.
+        /// At 64 hex characters apiece this caps the file at roughly 280 KB.
+        /// </summary>
+        public const int MaxUnreferenced = 4096;
+
         [Serializable]
         class CacheFile
         {
@@ -36,6 +47,14 @@ namespace UniLFS.Editor
 
         readonly string _path;
         readonly object _lock = new object();
+        /// <summary>
+        /// Confirmed hashes in the order they were first confirmed. Order is
+        /// what makes pruning drop the longest-standing entries rather than
+        /// arbitrary ones; re-confirming a hash does not move it, which is fine
+        /// for a heuristic about what to keep. <see cref="_blobs"/> mirrors this
+        /// for lookup.
+        /// </summary>
+        List<string> _order = new List<string>();
         HashSet<string> _blobs = new HashSet<string>();
         bool _dirty;
 
@@ -72,10 +91,11 @@ namespace UniLFS.Editor
                 var data = JsonUtility.FromJson<CacheFile>(File.ReadAllText(_path, Encoding.UTF8));
                 if (data == null || data.blobs == null) return;
                 foreach (var h in data.blobs)
-                    if (!string.IsNullOrEmpty(h)) _blobs.Add(h);
+                    if (!string.IsNullOrEmpty(h) && _blobs.Add(h)) _order.Add(h);
             }
             catch (Exception)
             {
+                _order = new List<string>();
                 _blobs = new HashSet<string>();
             }
         }
@@ -89,8 +109,7 @@ namespace UniLFS.Editor
         public void Add(string hash)
         {
             if (string.IsNullOrEmpty(hash)) return;
-            lock (_lock)
-                if (_blobs.Add(hash)) _dirty = true;
+            lock (_lock) AddUnlocked(hash);
         }
 
         public void AddRange(IEnumerable<string> hashes)
@@ -98,7 +117,7 @@ namespace UniLFS.Editor
             if (hashes == null) return;
             lock (_lock)
                 foreach (var h in hashes)
-                    if (!string.IsNullOrEmpty(h) && _blobs.Add(h)) _dirty = true;
+                    if (!string.IsNullOrEmpty(h)) AddUnlocked(h);
         }
 
         /// <summary>
@@ -113,26 +132,48 @@ namespace UniLFS.Editor
         {
             if (string.IsNullOrEmpty(hash)) return;
             lock (_lock)
-                if (_blobs.Remove(hash)) _dirty = true;
+            {
+                if (!_blobs.Remove(hash)) return;
+                _order.Remove(hash);
+                _dirty = true;
+            }
         }
 
         /// <summary>
-        /// Drops confirmations for blobs the manifest no longer references, so
-        /// the file does not grow without bound as assets churn.
+        /// Bounds the file's growth while keeping proof that is still true.
+        /// Everything the manifest references survives, and so do the most
+        /// recent <see cref="MaxUnreferenced"/> confirmations it does not.
+        ///
+        /// Dropping every unreferenced hash on sight — which is what this used
+        /// to do — threw away answers that were still correct: a manifest that
+        /// moves off a hash today may name it again tomorrow, and until some
+        /// later Refresh re-earned the confirmation the file sat there reading
+        /// "not pushed" despite never having left storage.
         /// </summary>
-        public void RetainOnly(IEnumerable<string> hashes)
+        public void Prune(IEnumerable<string> manifestHashes)
         {
             var keep = new HashSet<string>();
-            foreach (var h in hashes)
-                if (!string.IsNullOrEmpty(h)) keep.Add(h);
+            if (manifestHashes != null)
+                foreach (var h in manifestHashes)
+                    if (!string.IsNullOrEmpty(h)) keep.Add(h);
             lock (_lock)
             {
-                if (_blobs.Count == 0) return;
-                var pruned = new HashSet<string>();
-                foreach (var h in _blobs)
-                    if (keep.Contains(h)) pruned.Add(h);
-                if (pruned.Count == _blobs.Count) return;
-                _blobs = pruned;
+                int unreferenced = 0;
+                foreach (var h in _order)
+                    if (!keep.Contains(h)) unreferenced++;
+                if (unreferenced <= MaxUnreferenced) return;
+
+                int drop = unreferenced - MaxUnreferenced;
+                var kept = new List<string>(_order.Count - drop);
+                foreach (var h in _order)
+                {
+                    // _order runs oldest first, so taking the drops from the
+                    // front leaves the most recently added window behind.
+                    if (drop > 0 && !keep.Contains(h)) { drop--; continue; }
+                    kept.Add(h);
+                }
+                _order = kept;
+                _blobs = new HashSet<string>(kept);
                 _dirty = true;
             }
         }
@@ -143,12 +184,22 @@ namespace UniLFS.Editor
             {
                 if (!_dirty) return;
                 var data = new CacheFile();
-                data.blobs.AddRange(_blobs);
-                data.blobs.Sort(StringComparer.Ordinal);
+                // Written in confirmation order, not sorted: the order is what
+                // Prune reads to decide what to drop, and it has to survive a
+                // reload. Nothing diffs this file - it lives under Library/.
+                data.blobs.AddRange(_order);
                 Directory.CreateDirectory(Path.GetDirectoryName(_path));
                 File.WriteAllText(_path, JsonUtility.ToJson(data), new UTF8Encoding(false));
                 _dirty = false;
             }
+        }
+
+        /// <summary>Caller must hold <see cref="_lock"/>.</summary>
+        void AddUnlocked(string hash)
+        {
+            if (!_blobs.Add(hash)) return;
+            _order.Add(hash);
+            _dirty = true;
         }
     }
 }

@@ -65,9 +65,13 @@ namespace UniLFS.Editor
                 + " upToDate=" + result.Skipped
                 + " missingLocal=" + result.MissingLocal.Count
                 + " keptModified=" + result.KeptModified.Count
+                + " outdated=" + result.Outdated.Count
+                + " conflicted=" + result.Conflicted.Count
                 + " errors=" + result.Errors.Count);
             foreach (var path in result.MissingLocal) Debug.LogWarning("UniLFS CLI: missing locally: " + path);
             foreach (var path in result.KeptModified) Debug.LogWarning("UniLFS CLI: locally modified, kept: " + path);
+            foreach (var path in result.Outdated) Debug.LogWarning("UniLFS CLI: local copy is older than the manifest, not pushed (run Pull): " + path);
+            foreach (var path in result.Conflicted) Debug.LogWarning("UniLFS CLI: changed locally and in the manifest, left alone: " + path);
             foreach (var error in result.Errors) Debug.LogError("UniLFS CLI: " + error);
             if (result.HasErrors)
                 throw new Exception("UniLFS " + label + " finished with " + result.Errors.Count + " error(s); see the log above.");

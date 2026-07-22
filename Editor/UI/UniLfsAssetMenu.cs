@@ -67,6 +67,15 @@ namespace UniLFS.Editor
 
                 string message = "UniLFS: tracked " + result.TrackedNew + " new file(s), updated " + result.TrackedUpdated
                     + ", unchanged " + result.Skipped + ". Press Push in Window > UniLFS to upload.";
+                if (result.Outdated.Count > 0)
+                    Debug.LogWarning("UniLFS: left " + result.Outdated.Count + " file(s) alone - the manifest already has a newer version than the copy here, "
+                        + "and re-tracking would have replaced it with this older one. Run Pull first:\n- "
+                        + string.Join("\n- ", result.Outdated.ToArray()));
+                if (result.Conflicted.Count > 0)
+                    Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) had changed both here and in the manifest since this project last synced. "
+                        + "Tracking them resolved that in favour of the local copy - the version the manifest named is no longer referenced:\n- "
+                        + string.Join("\n- ", result.Conflicted.ToArray())
+                        + "\nPress Push to upload them. To take the manifest's version instead, use Window > UniLFS > Restore Modified.");
                 if (result.HasErrors)
                     Debug.LogWarning(message + "\nErrors:\n- " + string.Join("\n- ", result.Errors));
                 else

@@ -68,17 +68,88 @@ namespace UniLFS.Editor.Tests
             Assert.IsTrue(reloaded.Contains(HashB), "retracting one blob must not touch the others");
         }
 
+        /// <summary>
+        /// Pruning everything the manifest does not currently name threw away
+        /// answers that were still correct. A manifest moves off a hash on every
+        /// push, revert and branch switch, and the blob stays in storage the
+        /// whole time — so the file it belonged to sat there reading "not
+        /// pushed" until someone pressed Refresh and paid for the round trip
+        /// again.
+        /// </summary>
         [Test]
-        public void RetainOnly_DropsBlobsTheManifestNoLongerReferences()
+        public void Prune_KeepsAConfirmationTheManifestJustMovedOffOf()
         {
             var cache = new UniLfsRemoteBlobCache(_path);
             cache.AddRange(new[] { HashA, HashB });
-            cache.RetainOnly(new[] { HashA });
+            cache.Prune(new[] { HashA });
             cache.Save();
 
             var reloaded = new UniLfsRemoteBlobCache(_path);
             Assert.IsTrue(reloaded.Contains(HashA));
-            Assert.IsFalse(reloaded.Contains(HashB));
+            Assert.IsTrue(reloaded.Contains(HashB), "the blob never left storage, so the proof is still good");
+        }
+
+        [Test]
+        public void Prune_DropsTheOldestOnceTheUnreferencedWindowIsFull()
+        {
+            var cache = new UniLfsRemoteBlobCache(_path);
+            int total = UniLfsRemoteBlobCache.MaxUnreferenced + 2;
+            var hashes = new string[total];
+            for (int i = 0; i < total; i++)
+            {
+                hashes[i] = i.ToString("x64");
+                cache.Add(hashes[i]);
+            }
+
+            cache.Prune(new string[0]);
+
+            Assert.IsFalse(cache.Contains(hashes[0]), "the longest-standing goes first");
+            Assert.IsFalse(cache.Contains(hashes[1]));
+            Assert.IsTrue(cache.Contains(hashes[2]), "everything inside the window stays");
+            Assert.IsTrue(cache.Contains(hashes[total - 1]));
+        }
+
+        [Test]
+        public void Prune_NeverDropsWhatTheManifestReferences()
+        {
+            var cache = new UniLfsRemoteBlobCache(_path);
+            int total = UniLfsRemoteBlobCache.MaxUnreferenced + 2;
+            var hashes = new string[total];
+            for (int i = 0; i < total; i++)
+            {
+                hashes[i] = i.ToString("x64");
+                cache.Add(hashes[i]);
+            }
+
+            // Referencing the very oldest takes it out of the running, leaving
+            // Max + 1 candidates for a Max-sized window: exactly one goes, and
+            // it is the oldest of the ones actually eligible.
+            cache.Prune(new[] { hashes[0] });
+
+            Assert.IsTrue(cache.Contains(hashes[0]), "a referenced hash is never a prune candidate");
+            Assert.IsFalse(cache.Contains(hashes[1]), "the oldest eligible one goes instead");
+            Assert.IsTrue(cache.Contains(hashes[2]));
+            Assert.IsTrue(cache.Contains(hashes[total - 1]));
+        }
+
+        /// <summary>
+        /// Prune reads confirmation order to decide what to drop, so the order
+        /// has to survive a round trip through the file.
+        /// </summary>
+        [Test]
+        public void Prune_UsesOrderThatSurvivedAReload()
+        {
+            var cache = new UniLfsRemoteBlobCache(_path);
+            int total = UniLfsRemoteBlobCache.MaxUnreferenced + 1;
+            for (int i = 0; i < total; i++) cache.Add(i.ToString("x64"));
+            cache.Save();
+
+            var reloaded = new UniLfsRemoteBlobCache(_path);
+            reloaded.Add("ffff000000000000000000000000000000000000000000000000000000000000");
+            reloaded.Prune(new string[0]);
+
+            Assert.IsFalse(reloaded.Contains(0.ToString("x64")), "the oldest from the reloaded file goes first");
+            Assert.IsTrue(reloaded.Contains("ffff000000000000000000000000000000000000000000000000000000000000"));
         }
 
         [Test]

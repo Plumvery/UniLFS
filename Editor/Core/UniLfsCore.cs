@@ -109,8 +109,8 @@ namespace UniLFS.Editor
             {
                 cache.Save();
                 // Status is the operation that runs most often, so it is where
-                // confirmations for blobs the manifest dropped get collected.
-                remote.RetainOnly(manifest.files.Select(f => f.hash));
+                // the confirmation file gets kept to size.
+                remote.Prune(manifest.files.Select(f => f.hash));
                 remote.Save();
             }
         }
@@ -122,7 +122,13 @@ namespace UniLFS.Editor
             foreach (var f in manifest.files)
             {
                 ct.ThrowIfCancellationRequested();
-                var entry = new UniLfsStatusEntry { File = f, RemoteKnown = remote.Contains(f.hash) };
+                string baseline = cache.GetBaseline(f.path);
+                var entry = new UniLfsStatusEntry
+                {
+                    File = f,
+                    RemoteKnown = remote.Contains(f.hash),
+                    BaselineKnown = !string.IsNullOrEmpty(baseline),
+                };
                 var info = new FileInfo(UniLfsPaths.ToAbsolute(f.path));
                 using (var item = reporter.Begin(f.path, info.Exists ? info.Length : f.size))
                 {
@@ -137,7 +143,16 @@ namespace UniLFS.Editor
                     {
                         entry.CurrentSize = info.Length;
                         entry.CurrentHash = await cache.GetHashAsync(f.path, item.Ratio(info.Length), ct).ConfigureAwait(false);
-                        entry.State = entry.CurrentHash == f.hash ? UniLfsFileState.UpToDate : UniLfsFileState.Modified;
+                        entry.State = UniLfsThreeWay.Classify(entry.CurrentHash, f.hash, baseline);
+                        // Local and manifest agreeing is itself a synced state,
+                        // so files that predate baselines - or whose Library/
+                        // was wiped - adopt one here rather than staying
+                        // unattributable until the next Push or Pull.
+                        if (entry.State == UniLfsFileState.UpToDate)
+                        {
+                            cache.RecordSynced(f.path, f.hash);
+                            entry.BaselineKnown = true;
+                        }
                     }
                 }
                 result.Add(entry);
@@ -189,6 +204,24 @@ namespace UniLFS.Editor
                     string hash;
                     using (var item = reporter.Begin(rel, size))
                         hash = await cache.GetHashAsync(rel, item.Ratio(size), ct).ConfigureAwait(false);
+                    var state = existing == null
+                        ? UniLfsFileState.UpToDate
+                        : UniLfsThreeWay.Classify(hash, existing.hash, cache.GetBaseline(rel));
+                    // Re-tracking a file whose manifest entry moved on while
+                    // this copy stayed put would rewrite the entry back to this
+                    // stale content - the same rollback Push refuses. Nothing is
+                    // lost by declining: Pull delivers the newer version.
+                    if (state == UniLfsFileState.Outdated)
+                    {
+                        result.Outdated.Add(rel);
+                        continue;
+                    }
+                    // Conflicted falls through on purpose. Track is the "keep
+                    // mine" half of resolving a conflict - Restore Modified is
+                    // "take theirs" - and it is the only way to declare local
+                    // content the winner. Recorded so the choice is not silent:
+                    // it does overwrite whatever the manifest named.
+                    if (state == UniLfsFileState.Conflicted) result.Conflicted.Add(rel);
                     // Recorded so a clone, which gets the .meta but not the
                     // gitignored asset, can put the GUID back instead of
                     // letting Unity mint a new one. See UniLfsMetaGuard.
@@ -211,6 +244,9 @@ namespace UniLFS.Editor
                     {
                         result.Skipped++;
                     }
+                    // Track always leaves local content and the manifest in
+                    // agreement, whichever branch got here.
+                    cache.RecordSynced(rel, hash);
                 }
                 reporter.Finish();
             }
@@ -268,11 +304,24 @@ namespace UniLFS.Editor
         /// </summary>
         public static async Task<UniLfsOpResult> PushAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
-            using (UniLfsOperationLock.Acquire("Push"))
-                return await PushUnlockedAsync(progress, ct).ConfigureAwait(false);
+            return await PushAsync(false, progress, ct).ConfigureAwait(false);
         }
 
-        static async Task<UniLfsOpResult> PushUnlockedAsync(IProgress<UniLfsProgress> progress, CancellationToken ct)
+        /// <param name="requireBaseline">
+        /// Skip files whose difference from the manifest cannot be attributed to
+        /// either side, instead of assuming the local copy is the newer one.
+        /// Push always rewrites the manifest from what it hashed, so for a file
+        /// with no baseline that assumption is a guess that can undo a
+        /// teammate's push. Callers acting on their own — Auto Push — pass true;
+        /// a human pressing Push has said which side they mean.
+        /// </param>
+        public static async Task<UniLfsOpResult> PushAsync(bool requireBaseline, IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
+        {
+            using (UniLfsOperationLock.Acquire("Push"))
+                return await PushUnlockedAsync(requireBaseline, progress, ct).ConfigureAwait(false);
+        }
+
+        static async Task<UniLfsOpResult> PushUnlockedAsync(bool requireBaseline, IProgress<UniLfsProgress> progress, CancellationToken ct)
         {
             var settings = UniLfsSettings.Load();
             var user = UniLfsUserSettings.Load();
@@ -308,11 +357,40 @@ namespace UniLFS.Editor
                             continue;
                         }
                         long size = info.Length;
+                        string hash;
                         using (var item = reporter.Begin(f.path, size))
+                            hash = await cache.GetHashAsync(f.path, item.Ratio(size), ct).ConfigureAwait(false);
+
+                        string baseline = cache.GetBaseline(f.path);
+                        var state = UniLfsThreeWay.Classify(hash, f.hash, baseline);
+                        // Guarded here rather than in the caller's file list:
+                        // Push always walks the whole manifest, so filtering
+                        // what made it *fire* would still let it rewrite
+                        // everything else it found on the way.
+                        if (requireBaseline && string.IsNullOrEmpty(baseline) && state != UniLfsFileState.UpToDate)
                         {
-                            string hash = await cache.GetHashAsync(f.path, item.Ratio(size), ct).ConfigureAwait(false);
-                            current[f.path] = new CurrentFile { Hash = hash, Size = size };
+                            result.Unattributed.Add(f.path);
+                            continue;
                         }
+                        if (state == UniLfsFileState.Outdated)
+                        {
+                            // Someone else pushed a newer version that this
+                            // machine has not pulled yet. The writeback below
+                            // would drag the manifest back to this older copy
+                            // and silently undo their change, so this file is
+                            // not Push's to touch - it is Pull's.
+                            result.Outdated.Add(f.path);
+                            continue;
+                        }
+                        if (state == UniLfsFileState.Conflicted)
+                        {
+                            // Local content and the manifest moved apart in
+                            // different directions. Either version could be the
+                            // one worth keeping, so neither gets picked here.
+                            result.Conflicted.Add(f.path);
+                            continue;
+                        }
+                        current[f.path] = new CurrentFile { Hash = hash, Size = size };
                     }
 
                     var uploadSourceByHash = new Dictionary<string, string>();
@@ -397,6 +475,9 @@ namespace UniLFS.Editor
                         if (!present) continue;
                         if (f.hash == cur.Hash && f.size == cur.Size) result.Skipped++;
                         else { f.hash = cur.Hash; f.size = cur.Size; }
+                        // The blob is in storage and the manifest now names it,
+                        // so this is the version this machine is in sync with.
+                        cache.RecordSynced(f.path, cur.Hash);
                     }
                     manifest.Save(UniLfsPaths.ManifestPath);
                     UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, manifest.files.Select(f => f.path));
@@ -438,11 +519,18 @@ namespace UniLFS.Editor
                 var statuses = await StatusInternalAsync(manifest, cache, remote, reporter, 0f, PullStatusSpan, ct).ConfigureAwait(false);
                 var targets = statuses.Where(s =>
                     s.State == UniLfsFileState.MissingLocal ||
-                    (restoreModified && s.State == UniLfsFileState.Modified)).ToList();
+                    // The manifest moved on and this copy is exactly the one
+                    // this machine last synced, so replacing it loses nothing.
+                    // Without this, a teammate updating an already-tracked file
+                    // reached nobody: the file was on disk, so it never counted
+                    // as missing, and Pull downloaded only missing files.
+                    s.State == UniLfsFileState.Outdated ||
+                    (restoreModified && (s.State == UniLfsFileState.Modified || s.State == UniLfsFileState.Conflicted))).ToList();
                 foreach (var s in statuses)
                 {
                     if (s.State == UniLfsFileState.UpToDate) result.Skipped++;
                     else if (s.State == UniLfsFileState.Modified && !restoreModified) result.KeptModified.Add(s.File.path);
+                    else if (s.State == UniLfsFileState.Conflicted && !restoreModified) result.Conflicted.Add(s.File.path);
                 }
                 if (targets.Count == 0)
                 {
@@ -484,6 +572,10 @@ namespace UniLFS.Editor
                                     if (File.Exists(abs)) File.SetAttributes(abs, FileAttributes.Normal);
                                     File.Copy(tmpBlob, abs, true);
                                     cache.RecordKnownFromDisk(target.File.path, hash);
+                                    // Local content and the manifest now agree,
+                                    // which is what later runs compare against
+                                    // to tell a local edit from a stale copy.
+                                    cache.RecordSynced(target.File.path, hash);
                                     Interlocked.Increment(ref result.Downloaded);
                                 }
                             }

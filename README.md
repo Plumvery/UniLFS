@@ -26,7 +26,7 @@ Git LFS free tiers are tiny (GitHub: 1 GB storage / 1 GB bandwidth per month) an
 - **Bring your own storage** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi (S3 API), or Google Drive
 - **`.meta` files stay in git** — and their GUIDs are recorded in the manifest, so a clone never re-imports tracked assets under new ones
 - **Content-addressed & verified** — blobs are stored by SHA-256 and every download is hash-checked
-- **Auto sync** — missing files are pulled and local changes are pushed without git hooks
+- **Auto sync** — missing and outdated files are pulled and local changes are pushed without git hooks
 - **Merge-friendly manifest** — one line per file, sorted, so PRs stay reviewable
 - **CI ready** — batch mode entry points, env-var credentials, and a Unity-free verify gate
 
@@ -46,7 +46,7 @@ flowchart LR
 
 1. **Track** — you pick large files; UniLFS records their SHA-256 in `unilfs.manifest.json` and adds them to a managed `.gitignore` block.
 2. **Push** — blobs missing from the remote are uploaded (`objects/<aa>/<sha256>`, deduplicated). The manifest only records a new hash after its blob is confirmed uploaded, so a committed manifest never points at a missing blob.
-3. **Pull** — teammates (or CI) download whatever the manifest lists that is missing locally. Downloads are verified against the manifest hash before touching your project.
+3. **Pull** — teammates (or CI) download whatever the manifest lists that is missing locally, or that someone else has since pushed a newer version of. Downloads are verified against the manifest hash before touching your project.
 
 Editing a tracked file is just: edit → **Push** → commit the manifest change. Switching branches: checkout → **Pull**. Both directions can happen [automatically](#-auto-sync--no-git-hooks-needed).
 
@@ -130,11 +130,15 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 |--------|--------------|
 | Refresh | Re-checks every tracked file, and asks storage whether it really has their blobs |
 | Push | Uploads new/changed blobs, then updates the manifest |
-| Pull | Downloads files that are missing locally |
-| Restore Modified | Overwrites locally modified files with the manifest version (asks first) |
+| Pull | Downloads files that are missing locally or superseded by a newer version |
+| Restore Modified | Overwrites locally modified and conflicting files with the manifest version (asks first) |
 | Track / Untrack Selected | Same as the `Assets > UniLFS` context menu |
 
-File states: **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but was never uploaded from this machine — typically tracked but not yet pushed) / **modified** (local edit not pushed) / **missing** (needs Pull).
+File states: **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but was never uploaded from this machine — typically tracked but not yet pushed) / **modified** (your local edit, not pushed) / **outdated** (someone else pushed a newer version — run Pull) / **conflicted** (changed here *and* in the manifest since you last synced) / **missing** (needs Pull).
+
+Telling **modified** from **outdated** takes a third fact, because both just mean "local differs from the manifest" and they need opposite buttons. UniLFS records under `Library/UniLFS/` which manifest hash each file was last in sync with on this machine, and compares against that — the same way a merge base decides which side of a diff actually moved. A **conflicted** file is the case where that comparison says *both* sides moved; resolve it by hand with **Restore Modified** (take the manifest's version) or **Track Selected** then Push (keep yours).
+
+Delete `Library/UniLFS/` and any file that is already diverged at that moment reads as **modified** again — the conservative answer, since nothing gets overwritten on a guess. Auto Push leaves those alone rather than assuming yours is the newer one; an explicit Push still takes them. Every file re-learns its baseline the next time local and manifest agree.
 
 "Confirmed in storage" is recorded locally under `Library/UniLFS/` whenever a Push, Pull or Verify proves a blob exists, so drawing the list costs no network calls. **Refresh** is what re-establishes that proof: it asks storage about every blob in the manifest, which is how a fresh clone (which has confirmed nothing yet) stops showing everything as not pushed, and how a blob deleted from the bucket goes back to **not pushed**. Opening the window and the re-check after a Push or Pull stay local-only.
 
@@ -142,7 +146,7 @@ File states: **up to date** (matches the manifest and the blob is confirmed in s
 
 Because the real bytes only exist on the machines that edit them, syncing has to start client-side (git-lfs works the same way). UniLFS automates both directions from inside the editor, and gives CI a cheap way to catch anything that slips through:
 
-**Auto Pull** — whenever the editor starts or regains focus (exactly what happens right after you run `git pull`), a cheap existence check runs. If the manifest changed and tracked files are missing, the setting decides: **Ask** (default, dialog), **Automatic** (background download), or **Off** (Console warning only).
+**Auto Pull** — whenever the editor starts or regains focus (exactly what happens right after you run `git pull`), and only when the manifest file itself has changed since the last check, UniLFS re-checks tracked files. If any are missing or outdated, the setting decides: **Ask** (default, dialog), **Automatic** (background download), or **Off** (Console warning only).
 
 **Auto Push** — when tracked files have local changes that were never uploaded, UniLFS notices (on focus changes, and in Automatic mode right after the asset is saved/imported) and offers to push — so blobs are already in storage by the time you commit the manifest. Same three modes, default **Ask**.
 

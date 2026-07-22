@@ -9,9 +9,21 @@ using UnityEngine;
 namespace UniLFS.Editor
 {
     /// <summary>
-    /// Per-machine cache under Library/ mapping (mtime, size) to a known SHA-256,
-    /// so repeated status checks do not re-hash unchanged multi-gigabyte files.
-    /// Safe to delete at any time; it is rebuilt on demand.
+    /// Per-machine record for each tracked file, kept under Library/. Two
+    /// things live here, both keyed by project-relative path:
+    ///
+    /// - A (mtime, size) -> SHA-256 cache, so repeated status checks do not
+    ///   re-hash unchanged multi-gigabyte files. Pure optimisation.
+    /// - The sync baseline: the manifest hash this machine last agreed with for
+    ///   that file, recorded whenever Track, Push or Pull leaves the two in
+    ///   sync. This is what lets UniLFS tell "I edited this" from "someone else
+    ///   pushed a newer version" — two situations that look identical from the
+    ///   hashes alone (local != manifest) and need opposite fixes.
+    ///
+    /// Deleting the file stays safe. Hashes come back on their own, and a file
+    /// whose baseline is gone falls back to the conservative reading (Modified),
+    /// so local content is never overwritten on a guess; the baseline restores
+    /// itself the next time local and manifest agree.
     /// </summary>
     public class UniLfsStateCache
     {
@@ -22,6 +34,12 @@ namespace UniLFS.Editor
             public long mtimeTicks;
             public long size;
             public string hash;
+            /// <summary>
+            /// Manifest hash this file was last in sync with. Empty for entries
+            /// written by UniLFS 0.3.2 and earlier, and for files this machine
+            /// has never pushed or pulled.
+            /// </summary>
+            public string baseHash;
         }
 
         [Serializable]
@@ -90,11 +108,19 @@ namespace UniLFS.Editor
             return hash;
         }
 
+        /// <summary>
+        /// Records what the file on disk currently hashes to. Leaves the
+        /// baseline alone: re-hashing a file that changed says nothing about
+        /// which version this machine last synced.
+        /// </summary>
         public void RecordKnown(string projectRelativePath, long mtimeTicks, long size, string hash)
         {
             lock (_lock)
             {
-                _entries[projectRelativePath] = new Entry { path = projectRelativePath, mtimeTicks = mtimeTicks, size = size, hash = hash };
+                var e = GetOrCreate(projectRelativePath);
+                e.mtimeTicks = mtimeTicks;
+                e.size = size;
+                e.hash = hash;
                 _dirty = true;
             }
         }
@@ -105,12 +131,53 @@ namespace UniLFS.Editor
             if (info.Exists) RecordKnown(projectRelativePath, info.LastWriteTimeUtc.Ticks, info.Length, hash);
         }
 
+        /// <summary>
+        /// Records that local content and the manifest agree on
+        /// <paramref name="manifestHash"/> — after Track, a successful Push, or
+        /// a successful Pull. Everything after this compares against it.
+        /// </summary>
+        public void RecordSynced(string projectRelativePath, string manifestHash)
+        {
+            if (string.IsNullOrEmpty(manifestHash)) return;
+            lock (_lock)
+            {
+                var e = GetOrCreate(projectRelativePath);
+                if (e.baseHash == manifestHash) return;
+                e.baseHash = manifestHash;
+                _dirty = true;
+            }
+        }
+
+        /// <summary>
+        /// The manifest hash this file was last in sync with, or null when this
+        /// machine has no record — in which case a divergence cannot be
+        /// attributed to either side and callers must not overwrite anything.
+        /// </summary>
+        public string GetBaseline(string projectRelativePath)
+        {
+            lock (_lock)
+            {
+                Entry e;
+                if (!_entries.TryGetValue(projectRelativePath, out e)) return null;
+                return string.IsNullOrEmpty(e.baseHash) ? null : e.baseHash;
+            }
+        }
+
         public void Forget(string projectRelativePath)
         {
             lock (_lock)
             {
                 if (_entries.Remove(projectRelativePath)) _dirty = true;
             }
+        }
+
+        /// <summary>Caller must hold <see cref="_lock"/>.</summary>
+        Entry GetOrCreate(string projectRelativePath)
+        {
+            Entry e;
+            if (!_entries.TryGetValue(projectRelativePath, out e))
+                _entries[projectRelativePath] = e = new Entry { path = projectRelativePath };
+            return e;
         }
     }
 }

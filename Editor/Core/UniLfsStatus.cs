@@ -6,10 +6,50 @@ namespace UniLFS.Editor
     {
         /// <summary>Local file exists and matches the manifest hash.</summary>
         UpToDate,
-        /// <summary>Local file exists but differs from the manifest hash.</summary>
+        /// <summary>
+        /// Local file changed since this machine last synced, while the manifest
+        /// stayed where it was. Needs Push.
+        /// </summary>
         Modified,
+        /// <summary>
+        /// The manifest moved on (someone else pushed a new version) while the
+        /// local file stayed where this machine last synced it. Needs Pull —
+        /// and must never be pushed, or the manifest would roll back to this
+        /// machine's older copy.
+        /// </summary>
+        Outdated,
+        /// <summary>
+        /// Local file and manifest both moved since the last sync, in different
+        /// directions. Neither side can win automatically.
+        /// </summary>
+        Conflicted,
         /// <summary>Tracked in the manifest but missing on disk (needs Pull).</summary>
         MissingLocal,
+    }
+
+    /// <summary>
+    /// Decides what a tracked file's hashes mean by comparing them against the
+    /// baseline — the manifest hash this machine last agreed with, recorded by
+    /// <see cref="UniLfsStateCache"/>.
+    ///
+    /// Local hash and manifest hash alone cannot carry this: "I edited it" and
+    /// "someone else pushed a newer one" both read as local != manifest, and
+    /// they need opposite fixes. The baseline is the third point that says which
+    /// side actually moved, the same way a merge base does.
+    /// </summary>
+    public static class UniLfsThreeWay
+    {
+        public static UniLfsFileState Classify(string localHash, string manifestHash, string baselineHash)
+        {
+            if (localHash == manifestHash) return UniLfsFileState.UpToDate;
+            // No baseline (pre-0.3.3 cache, deleted Library/, never synced here):
+            // the divergence cannot be attributed, so report the reading that
+            // makes every caller leave local content alone.
+            if (string.IsNullOrEmpty(baselineHash)) return UniLfsFileState.Modified;
+            if (localHash == baselineHash) return UniLfsFileState.Outdated;
+            if (manifestHash == baselineHash) return UniLfsFileState.Modified;
+            return UniLfsFileState.Conflicted;
+        }
     }
 
     public class UniLfsStatusEntry
@@ -25,6 +65,16 @@ namespace UniLFS.Editor
         /// uploaded. See <see cref="UniLfsRemoteBlobCache"/>.
         /// </summary>
         public bool RemoteKnown;
+        /// <summary>
+        /// Whether this machine has a record of which manifest hash the file was
+        /// last in sync with. False for files that were already diverged when
+        /// baselines arrived, or when <c>Library/</c> was last wiped: those read
+        /// as <see cref="UniLfsFileState.Modified"/> because that is the safe
+        /// guess, not because anything established that the local side is the
+        /// one that moved. Callers that act without the user watching should
+        /// leave them alone.
+        /// </summary>
+        public bool BaselineKnown;
     }
 
     /// <summary>
@@ -94,6 +144,28 @@ namespace UniLFS.Editor
         public List<string> MissingLocal = new List<string>();
         public List<string> KeptModified = new List<string>();
         public List<string> NewlyTracked = new List<string>();
+        /// <summary>
+        /// Files Push refused to upload because the local copy is older than the
+        /// manifest. Pushing them would roll the manifest back to this machine's
+        /// stale version and undo whoever pushed last.
+        /// </summary>
+        public List<string> Outdated = new List<string>();
+        /// <summary>
+        /// Files where local content and the manifest both moved since this
+        /// machine last synced. Push and Pull leave these alone; Track resolves
+        /// them in favour of the local copy and lists them here so that choice
+        /// gets reported rather than made silently. No consumer sees both kinds
+        /// of result, so the two readings never meet.
+        /// </summary>
+        public List<string> Conflicted = new List<string>();
+        /// <summary>
+        /// Files Push skipped because it could not tell whether the local copy
+        /// or the manifest is the newer one — this machine has no baseline for
+        /// them (they were already diverged when baselines arrived, or
+        /// <c>Library/</c> was wiped). Only populated for callers that asked for
+        /// that guarantee; an explicit Push takes them.
+        /// </summary>
+        public List<string> Unattributed = new List<string>();
         public List<string> Errors = new List<string>();
 
         public bool HasErrors

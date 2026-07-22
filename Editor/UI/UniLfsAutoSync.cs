@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -12,9 +13,10 @@ namespace UniLFS.Editor
     /// Keeps the project in sync without git hooks.
     ///
     /// Pull side: when the editor starts or regains focus (which is what
-    /// happens right after a git pull), a cheap existence check runs; if the
-    /// manifest changed and tracked files are missing, UniLFS warns / asks /
-    /// pulls depending on the Auto Pull setting.
+    /// happens right after a git pull), and only if the manifest file itself
+    /// changed since the last check, a status check runs; if tracked files are
+    /// missing or superseded by a newer version, UniLFS warns / asks / pulls
+    /// depending on the Auto Pull setting.
     ///
     /// Push side: when modified tracked files are detected (on focus changes,
     /// startup, or - in Auto mode - right after an asset import), UniLFS asks
@@ -35,27 +37,30 @@ namespace UniLFS.Editor
         {
             if (Application.isBatchMode) return;
             EditorApplication.focusChanged += OnFocusChanged;
-            EditorApplication.delayCall += () =>
+            EditorApplication.delayCall += async () =>
             {
-                CheckPull();
-                CheckPush(true, false);
+                await CheckPullAsync();
+                await CheckPushAsync(true, false);
             };
         }
 
-        static void OnFocusChanged(bool focused)
+        // Awaited rather than fired side by side: both take the operation lock
+        // for their status check, and whichever lost the race used to bail out
+        // silently.
+        static async void OnFocusChanged(bool focused)
         {
-            if (focused) CheckPull();
-            CheckPush(focused, false);
+            if (focused) await CheckPullAsync();
+            await CheckPushAsync(focused, false);
         }
 
-        internal static void OnTrackedAssetsImported()
+        internal static async void OnTrackedAssetsImported()
         {
-            CheckPush(true, true);
+            await CheckPushAsync(true, true);
         }
 
         // ---------- Pull ----------
 
-        static void CheckPull()
+        static async Task CheckPullAsync()
         {
             if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
 
@@ -65,27 +70,38 @@ namespace UniLFS.Editor
             if (SessionState.GetString(HandledPullStampKey, "") == stamp) return;
             SessionState.SetString(HandledPullStampKey, stamp);
 
-            UniLfsManifest manifest;
+            List<UniLfsStatusEntry> statuses;
             try
             {
-                manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+                // A full status rather than the existence check this used to
+                // do: a teammate updating an already-tracked file leaves it
+                // sitting on disk, so it never counted as missing and this
+                // never fired at all. The manifest stamp above means the check
+                // runs once per manifest version, and unchanged files answer
+                // straight from the hash cache, so it stays cheap.
+                statuses = await UniLfsCore.StatusAsync(null, CancellationToken.None);
+            }
+            catch (UniLfsBusyException)
+            {
+                // Something else holds the lock. Hand the stamp back so the next
+                // focus change retries, rather than marking this manifest
+                // version handled on the strength of a check that never ran.
+                SessionState.SetString(HandledPullStampKey, "");
+                return;
             }
             catch (Exception e)
             {
-                Debug.LogWarning("UniLFS: could not read the manifest: " + e.Message);
+                Debug.LogWarning("UniLFS: could not check tracked files: " + e.Message);
                 return;
             }
+            if (_running) return;
 
-            int missing = 0;
-            foreach (var f in manifest.files)
-            {
-                string abs = UniLfsPaths.ToAbsolute(f.path);
-                // A placeholder means the guard stood in for content that never
-                // arrived, so it counts as missing - Pull is what resolves it.
-                if (!File.Exists(abs) || UniLfsPlaceholder.IsPlaceholder(abs))
-                    missing++;
-            }
-            if (missing == 0) return;
+            // Missing (including placeholders the meta guard stood in) and
+            // outdated are both "storage has content this project does not".
+            var pending = statuses.FindAll(s =>
+                s.State == UniLfsFileState.MissingLocal || s.State == UniLfsFileState.Outdated);
+            if (pending.Count == 0) return;
+            int outdated = pending.FindAll(s => s.State == UniLfsFileState.Outdated).Count;
 
             switch (UniLfsSettings.Load().AutoPullMode)
             {
@@ -94,26 +110,34 @@ namespace UniLFS.Editor
                     break;
                 case UniLfsAutoPullMode.Ask:
                     // delayCall: never open a modal dialog from inside the focus event
-                    int missingCount = missing;
-                    EditorApplication.delayCall += () => PromptPull(missingCount);
+                    int pendingCount = pending.Count;
+                    int outdatedCount = outdated;
+                    EditorApplication.delayCall += () => PromptPull(pendingCount, outdatedCount);
                     break;
                 default:
-                    Debug.LogWarning("UniLFS: " + missing + " tracked file(s) are missing locally. Open Window > UniLFS and press Pull. "
+                    Debug.LogWarning("UniLFS: " + Describe(pending.Count, outdated) + ". Open Window > UniLFS and press Pull. "
                         + "(CI: Unity -batchmode -quit -executeMethod UniLFS.Editor.UniLfsCli.Pull)");
                     break;
             }
         }
 
-        static void PromptPull(int missing)
+        static void PromptPull(int pending, int outdated)
         {
             if (_running || UniLfsOperationLock.IsBusy) return;
             bool pull = EditorUtility.DisplayDialog("UniLFS",
-                missing + " tracked file(s) are missing locally - the UniLFS manifest changed, e.g. after a git pull.\n\nDownload them now?",
+                Describe(pending, outdated) + " - the UniLFS manifest changed, e.g. after a git pull.\n\nDownload them now?",
                 "Pull", "Later");
             if (pull)
                 RunPull();
             else
-                Debug.LogWarning("UniLFS: skipped pulling " + missing + " missing file(s). Use Window > UniLFS > Pull when ready.");
+                Debug.LogWarning("UniLFS: skipped pulling " + pending + " file(s). Use Window > UniLFS > Pull when ready.");
+        }
+
+        static string Describe(int pending, int outdated)
+        {
+            string text = pending + " tracked file(s) need downloading";
+            if (outdated > 0) text += " (" + outdated + " superseded by a newer version)";
+            return text;
         }
 
         static async void RunPull()
@@ -131,7 +155,13 @@ namespace UniLFS.Editor
                         + result.Errors.Count + " error(s):\n- " + string.Join("\n- ", result.Errors));
                 else
                     Debug.Log("UniLFS auto pull: downloaded " + result.Downloaded + " file(s)"
-                        + (result.KeptModified.Count > 0 ? ", kept " + result.KeptModified.Count + " locally modified file(s)" : "") + ".");
+                        + (result.KeptModified.Count > 0 ? ", kept " + result.KeptModified.Count + " locally modified file(s)" : "")
+                        + (result.Conflicted.Count > 0 ? ", left " + result.Conflicted.Count + " conflicting file(s) alone" : "") + ".");
+                if (result.Conflicted.Count > 0)
+                    Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) changed here and in the manifest since this project last synced, "
+                        + "so neither version was picked:\n- " + string.Join("\n- ", result.Conflicted.ToArray())
+                        + "\nTake the manifest's version with Window > UniLFS > Restore Modified, "
+                        + "or keep yours with Assets > UniLFS > Track Selected followed by Push.");
             }
             catch (UniLfsBusyException)
             {
@@ -156,7 +186,7 @@ namespace UniLFS.Editor
 
         // ---------- Push ----------
 
-        static async void CheckPush(bool focused, bool fromImport)
+        static async Task CheckPushAsync(bool focused, bool fromImport)
         {
             if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
             if (!File.Exists(UniLfsPaths.ManifestPath)) return;
@@ -179,7 +209,16 @@ namespace UniLFS.Editor
             }
             if (_running) return;
 
-            var modified = statuses.FindAll(s => s.State == UniLfsFileState.Modified);
+            // Modified only, and only where a baseline actually says so.
+            // Outdated files differ from the manifest too, but pushing one
+            // rewrites the entry back to this machine's older copy - offering
+            // that as "local changes to upload" is how a teammate's update got
+            // undone with a single click. Files with no baseline read as
+            // Modified on a guess rather than on evidence, so they are not
+            // worth prompting about either; the window still lists them and an
+            // explicit Push still takes them. This only decides whether to
+            // offer - what the push itself touches is RunPush's requireBaseline.
+            var modified = statuses.FindAll(s => s.State == UniLfsFileState.Modified && s.BaselineKnown);
             if (modified.Count == 0) return;
 
             var sb = new StringBuilder();
@@ -218,13 +257,23 @@ namespace UniLFS.Editor
             int progressId = Progress.Start("UniLFS Auto Push");
             try
             {
-                var result = await UniLfsCore.PushAsync(ProgressReporter(progressId), CancellationToken.None);
+                // requireBaseline: Push rewrites the manifest from whatever it
+                // hashed, across every tracked file - not just the ones that
+                // triggered this run. Without the flag, one ordinary local edit
+                // firing Auto Push would drag every unattributable file along
+                // and roll their entries back to this machine's copy.
+                var result = await UniLfsCore.PushAsync(true, ProgressReporter(progressId), CancellationToken.None);
                 Progress.Finish(progressId, result.HasErrors ? Progress.Status.Failed : Progress.Status.Succeeded);
                 if (result.HasErrors)
                     Debug.LogError("UniLFS auto push: uploaded " + result.Uploaded + " file(s), "
                         + result.Errors.Count + " error(s):\n- " + string.Join("\n- ", result.Errors));
                 else if (result.Uploaded > 0)
                     Debug.Log("UniLFS auto push: uploaded " + result.Uploaded + " file(s). Remember to commit unilfs.manifest.json.");
+                if (result.Unattributed.Count > 0)
+                    Debug.LogWarning("UniLFS auto push: left " + result.Unattributed.Count + " file(s) alone - this project has no record of which "
+                        + "version they were last synced from, so whether your copy or the manifest's is newer cannot be told apart:\n- "
+                        + string.Join("\n- ", result.Unattributed.ToArray())
+                        + "\nRun Pull to take the manifest's version, or Push from Window > UniLFS to upload yours.");
             }
             catch (UniLfsBusyException)
             {

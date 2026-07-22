@@ -89,12 +89,12 @@ namespace UniLFS.Editor
                     RefreshStatus(true);
                 if (GUILayout.Button(new GUIContent("Push", "Upload changed/new blobs and update the manifest"), EditorStyles.toolbarButton, GUILayout.Width(50)))
                     RunOperation("Push", (p, ct) => UniLfsCore.PushAsync(p, ct), false);
-                if (GUILayout.Button(new GUIContent("Pull", "Download files that are missing locally"), EditorStyles.toolbarButton, GUILayout.Width(50)))
+                if (GUILayout.Button(new GUIContent("Pull", "Download files that are missing locally or superseded by a newer version"), EditorStyles.toolbarButton, GUILayout.Width(50)))
                     RunOperation("Pull", (p, ct) => UniLfsCore.PullAsync(false, p, ct), true);
-                if (GUILayout.Button(new GUIContent("Restore Modified", "Overwrite locally modified files with the manifest version"), EditorStyles.toolbarButton, GUILayout.Width(110)))
+                if (GUILayout.Button(new GUIContent("Restore Modified", "Overwrite locally modified and conflicting files with the manifest version"), EditorStyles.toolbarButton, GUILayout.Width(110)))
                 {
                     if (EditorUtility.DisplayDialog("UniLFS - Restore Modified",
-                        "Overwrite locally modified tracked files with the version recorded in the manifest?\nLocal changes will be lost.",
+                        "Overwrite locally modified and conflicting tracked files with the version recorded in the manifest?\nLocal changes will be lost.",
                         "Restore", "Cancel"))
                         RunOperation("Restore", (p, ct) => UniLfsCore.PullAsync(true, p, ct), true);
                 }
@@ -239,7 +239,7 @@ namespace UniLFS.Editor
             GUILayout.FlexibleSpace();
             if (_statuses != null && _statuses.Count > 0)
             {
-                int upToDate = 0, notPushed = 0, modified = 0, missing = 0;
+                int upToDate = 0, notPushed = 0, modified = 0, outdated = 0, conflicted = 0, missing = 0;
                 long totalSize = 0;
                 foreach (var s in _statuses)
                 {
@@ -250,13 +250,19 @@ namespace UniLFS.Editor
                             if (s.RemoteKnown) upToDate++; else notPushed++;
                             break;
                         case UniLfsFileState.Modified: modified++; break;
+                        case UniLfsFileState.Outdated: outdated++; break;
+                        case UniLfsFileState.Conflicted: conflicted++; break;
                         case UniLfsFileState.MissingLocal: missing++; break;
                     }
                 }
-                GUILayout.Label(
-                    _statuses.Count + " tracked (" + EditorUtility.FormatBytes(totalSize) + ")  |  " +
-                    upToDate + " up to date, " + notPushed + " not pushed, " + modified + " modified, " + missing + " missing",
-                    EditorStyles.miniLabel);
+                // The four everyday states always show, so their numbers stay in
+                // the same place; the two that mean "someone else moved" only
+                // take up room when there is something to say.
+                string summary = _statuses.Count + " tracked (" + EditorUtility.FormatBytes(totalSize) + ")  |  " +
+                    upToDate + " up to date, " + notPushed + " not pushed, " + modified + " modified, " + missing + " missing";
+                if (outdated > 0) summary += ", " + outdated + " outdated";
+                if (conflicted > 0) summary += ", " + conflicted + " conflicted";
+                GUILayout.Label(summary, EditorStyles.miniLabel);
             }
             // GUILayout.Label, not LabelField: LabelField reserves a single line,
             // so the tail of a long summary was being cut off.
@@ -265,9 +271,11 @@ namespace UniLFS.Editor
         }
 
         /// <summary>
-        /// Four states, because "matches the manifest" and "exists in remote
-        /// storage" are different questions: a freshly tracked file matches the
-        /// manifest immediately while living nowhere but this disk.
+        /// Six states. "Matches the manifest" and "exists in remote storage" are
+        /// different questions — a freshly tracked file matches the manifest
+        /// immediately while living nowhere but this disk — and a file that
+        /// differs from the manifest still has to say which side moved, because
+        /// your own edit and someone else's push need opposite buttons.
         /// </summary>
         static string StateBadge(UniLfsStatusEntry entry, out Color color, out string tooltip)
         {
@@ -277,6 +285,16 @@ namespace UniLFS.Editor
                     color = new Color(0.95f, 0.75f, 0.2f);
                     tooltip = "Locally changed since the last Push. Run Push to upload the new version.";
                     return "modified";
+                case UniLfsFileState.Outdated:
+                    color = new Color(0.3f, 0.8f, 0.85f);
+                    tooltip = "Someone else pushed a newer version and this copy is the one you last synced. "
+                        + "Run Pull to get theirs. Pushing would put your older copy back in the manifest.";
+                    return "outdated";
+                case UniLfsFileState.Conflicted:
+                    color = new Color(0.9f, 0.45f, 0.85f);
+                    tooltip = "Changed here and in the manifest since you last synced, so neither version wins automatically. "
+                        + "Take the manifest's with Restore Modified, or keep yours with Track Selected and then Push.";
+                    return "conflicted";
                 case UniLfsFileState.MissingLocal:
                     color = new Color(0.95f, 0.35f, 0.3f);
                     tooltip = "Tracked but not on disk. Run Pull to download it.";
@@ -455,6 +473,8 @@ namespace UniLFS.Editor
             if (r.Skipped > 0) parts.Add(r.Skipped + " up to date");
             if (r.MissingLocal.Count > 0) parts.Add(r.MissingLocal.Count + " missing locally (not pushed)");
             if (r.KeptModified.Count > 0) parts.Add(r.KeptModified.Count + " locally modified kept (use Restore Modified to overwrite)");
+            if (r.Outdated.Count > 0) parts.Add(r.Outdated.Count + " outdated, not pushed (run Pull first)");
+            if (r.Conflicted.Count > 0) parts.Add(r.Conflicted.Count + " conflicting, left alone");
             if (r.Errors.Count > 0) parts.Add(r.Errors.Count + " error(s)");
             if (parts.Count == 0) parts.Add("nothing to do");
             return label + ": " + string.Join(", ", parts) + ".";

@@ -5,6 +5,23 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-07-22
+
+### Fixed
+
+- A teammate updating an already-tracked file reached nobody. Pull downloaded only files *missing* from disk, and an updated file is not missing — it is sitting right there with the old bytes — so Pull skipped it, and Auto Pull never fired at all, because its check was literally "does this path exist?". The project kept the stale version with nothing on screen saying so. Only **Restore Modified** brought it down, and nothing pointed you at it.
+- Push would then roll the change back. A stale copy and a local edit both read as `modified`, so Auto Push offered to upload it, and Push rewrote the manifest entry to the older local hash — undoing whoever pushed last, in a change git shows as an ordinary one-line manifest diff. `Assets > UniLFS > Track Selected` on an already-tracked file did the same thing.
+- Files could sit at **not pushed** (blue) while their blob had never left storage. Every status check dropped confirmations for blobs the current manifest did not name, so any manifest change discarded proof that was still true, and the file stayed blue until someone pressed Refresh and paid for the round trip again. Confirmations outside the manifest are now kept (most recent 4096) instead of dropped on sight.
+- Auto Pull and Auto Push each ran a status check on startup without waiting for the other, so whichever lost the race for the operation lock gave up silently.
+
+### Added
+
+- **outdated** and **conflicted** file states, splitting what `modified` used to cover. Local hash versus manifest hash cannot tell "I edited this" from "someone else pushed a newer one" — both are just `local != manifest`, and they need opposite buttons. UniLFS now records, per machine under `Library/UniLFS/`, which manifest hash each file was last in sync with, and compares against that the way a merge base decides which side of a diff moved.
+
+  Pull downloads **outdated** files; Push refuses to touch them and says to Pull instead. **conflicted** (both sides moved) is left alone by Push and Pull, and resolved by hand: take the manifest's version with **Restore Modified**, or keep yours with **Track Selected** followed by Push — Track says in the Console when it resolved one that way, since it drops whatever the manifest named.
+
+  Baselines are recorded by Track, Push and Pull, and adopted automatically whenever local and manifest already agree, so an existing project establishes them on its first status check with no re-tracking. A file that is *already* diverged at that moment has nothing to adopt: it reads `modified`, the conservative answer, but Auto Push now leaves it alone rather than guessing that the local side is the newer one. An explicit Push still takes it. The same applies after deleting `Library/UniLFS/`.
+
 ## [0.3.2] - 2026-07-22
 
 ### Fixed

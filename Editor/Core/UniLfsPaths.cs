@@ -30,6 +30,45 @@ namespace UniLFS.Editor
             }
         }
 
+        /// <summary>
+        /// Points every path below at <paramref name="root"/> until the returned
+        /// scope is disposed, restoring whatever was in effect before (so the
+        /// scopes nest).
+        ///
+        /// Only the tests use this. The manifest, the state cache, the settings
+        /// and the credentials all live at fixed places under the project root,
+        /// so two clones of one project sharing one bucket — the situation every
+        /// cross-machine rule in Push and Pull exists for — is only reachable by
+        /// moving that root between operations.
+        /// </summary>
+        internal static IDisposable OverrideProjectRoot(string root)
+        {
+            if (string.IsNullOrEmpty(root)) throw new ArgumentException("root must not be empty", "root");
+            var scope = new ProjectRootScope(_projectRoot);
+            _projectRoot = Normalize(Path.GetFullPath(root));
+            return scope;
+        }
+
+        sealed class ProjectRootScope : IDisposable
+        {
+            readonly string _previous;
+            bool _restored;
+
+            public ProjectRootScope(string previous)
+            {
+                _previous = previous;
+            }
+
+            public void Dispose()
+            {
+                if (_restored) return;
+                _restored = true;
+                // Restoring null is fine: Init() recomputes the real root from
+                // Application.dataPath the next time anything asks.
+                _projectRoot = _previous;
+            }
+        }
+
         public const string ManifestFileName = "unilfs.manifest.json";
 
         public static string ManifestPath => Combine(ProjectRoot, ManifestFileName);

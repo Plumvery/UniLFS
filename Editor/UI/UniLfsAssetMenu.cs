@@ -54,7 +54,8 @@ namespace UniLFS.Editor
             }
             if (!EditorUtility.DisplayDialog("UniLFS - Track",
                 "Track " + files.Count + " file(s) (" + EditorUtility.FormatBytes(totalSize) + ") with UniLFS?\n\n"
-                + "They will be recorded in unilfs.manifest.json and added to .gitignore. Their .meta files stay in git. Run Push afterwards to upload.",
+                + "They will be staged on this machine and hidden from git. Push uploads them and records them in "
+                + "unilfs.manifest.json, which is what the rest of the team sees. Their .meta files stay in git.",
                 "Track", "Cancel"))
                 return;
 
@@ -65,17 +66,22 @@ namespace UniLFS.Editor
                     Progress.Report(progressId, p.Fraction, p.Label)), CancellationToken.None);
                 Progress.Finish(progressId, result.HasErrors ? Progress.Status.Failed : Progress.Status.Succeeded);
 
-                string message = "UniLFS: tracked " + result.TrackedNew + " new file(s), updated " + result.TrackedUpdated
-                    + ", unchanged " + result.Skipped + ". Press Push in Window > UniLFS to upload.";
+                string message = "UniLFS: staged " + result.TrackedNew + " new file(s), " + result.Skipped
+                    + " already tracked. Press Push in Window > UniLFS to upload them and record them in the manifest.";
                 if (result.Outdated.Count > 0)
-                    Debug.LogWarning("UniLFS: left " + result.Outdated.Count + " file(s) alone - the manifest already has a newer version than the copy here, "
-                        + "and re-tracking would have replaced it with this older one. Run Pull first:\n- "
+                    Debug.LogWarning("UniLFS: " + result.Outdated.Count + " file(s) are already tracked and the manifest has a newer version "
+                        + "than the copy here, so there was nothing to track. Run Pull to get it:\n- "
                         + string.Join("\n- ", result.Outdated.ToArray()));
                 if (result.Conflicted.Count > 0)
-                    Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) had changed both here and in the manifest since this project last synced. "
-                        + "Tracking them resolved that in favour of the local copy - the version the manifest named is no longer referenced:\n- "
+                    Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) are already tracked and their local content and the manifest "
+                        + "disagree with no shared history to go on, so neither version wins automatically:\n- "
                         + string.Join("\n- ", result.Conflicted.ToArray())
-                        + "\nPress Push to upload them. To take the manifest's version instead, use Window > UniLFS > Restore Modified.");
+                        + "\nKeep this machine's copy with Window > UniLFS > Keep Mine followed by Push, "
+                        + "or take the manifest's with Restore Modified.");
+                if (result.NotIgnored.Count > 0)
+                    Debug.LogWarning("UniLFS: " + result.NotIgnored.Count + " staged file(s) could not be hidden from git - this project is not in a "
+                        + "git checkout UniLFS could write .git/info/exclude in. Until they are pushed, 'git add -A' would commit them:\n- "
+                        + string.Join("\n- ", result.NotIgnored.ToArray()));
                 if (result.HasErrors)
                     Debug.LogWarning(message + "\nErrors:\n- " + string.Join("\n- ", result.Errors));
                 else
@@ -103,19 +109,22 @@ namespace UniLFS.Editor
         public static void UntrackSelection(Action onDone)
         {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            // Staged files are tracked too - they are simply tracked here only -
+            // so untracking has to reach them, or a file staged by mistake could
+            // never be un-staged.
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
+            var all = manifest.files.Select(f => f.path).Concat(staged.paths).Distinct().ToList();
             var selected = new List<string>();
             foreach (var guid in Selection.assetGUIDs)
             {
                 string assetPath = AssetDatabase.GUIDToAssetPath(guid);
                 if (string.IsNullOrEmpty(assetPath)) continue;
                 if (AssetDatabase.IsValidFolder(assetPath))
-                    selected.AddRange(manifest.files
-                        .Where(f => f.path.StartsWith(assetPath + "/", StringComparison.Ordinal))
-                        .Select(f => f.path));
+                    selected.AddRange(all.Where(p => p.StartsWith(assetPath + "/", StringComparison.Ordinal)));
                 else
                     selected.Add(UniLfsPaths.Normalize(assetPath));
             }
-            var tracked = selected.Distinct().Where(p => manifest.Find(p) != null).ToList();
+            var tracked = selected.Distinct().Where(p => all.Contains(p)).ToList();
             if (tracked.Count == 0)
             {
                 EditorUtility.DisplayDialog("UniLFS", "The selection contains no UniLFS-tracked files.", "OK");

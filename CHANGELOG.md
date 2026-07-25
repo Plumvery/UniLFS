@@ -5,6 +5,26 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-25
+
+### Changed
+
+- **Track no longer writes `unilfs.manifest.json`.** It stages the paths in a new local file and hides them from git; **Push** is what creates the manifest entry, after storage confirms the content. The manifest is a committed file, and an entry in it is a promise that the bytes are downloadable — a promise Track was in no position to make. The old order is where two separate failures came from, and both are gone: committing a manifest that references blobs nobody uploaded, and the one below.
+- Track is now instant. It no longer hashes a file it is not about to upload, so tracking a folder of multi-gigabyte assets no longer reads all of them first.
+- The GUID recorded next to an asset is read at Push time rather than at Track time, so a re-import that mints a new GUID reaches the rest of the team without anyone re-tracking anything.
+- Re-running **Track Selected** on an already-tracked file no longer resolves a conflict in favour of the local copy — that was a committed manifest being rewritten by a command that reads as "start tracking this". Use **Keep Mine** (below).
+
+### Added
+
+- `unilfs.staged.json` (never committed, next to the manifest): the paths this machine has asked to track and has not pushed. It holds no hashes, sizes or GUIDs — only intent, so nothing in it can go stale. Deleting it loses the intent, not any fact; re-run Track.
+- **staged** file state, for a file tracked here and in no manifest yet: nobody else can see it until you Push.
+- **Keep Mine** button next to **Restore Modified**, the recorded half of resolving a conflict ("keep mine" vs "take theirs"). Because it is recorded rather than passed to one Push call, Auto Push honours it too.
+- Staged files are hidden from git through `.git/info/exclude`, which git never tracks — including from a linked worktree or a submodule, where `.git` is a file and the exclude file lives elsewhere. The committed `.gitignore` block stays derived from the manifest alone, so it cannot differ between two machines. Outside a git checkout there is nowhere to write that, and UniLFS says so instead of pretending the file is hidden.
+
+### Fixed
+
+- Two people tracking the same path independently could lose one of the two versions without a word. Track recorded a sync baseline for content that had never been uploaded, so when the other person's manifest arrived the local copy read as **outdated** — "only the manifest moved" — and Pull replaced a file that existed on exactly one disk and in no bucket. It now reads as **conflicted** and neither Push nor Pull touches it until someone chooses.
+
 ## [0.3.3] - 2026-07-22
 
 ### Fixed

@@ -1,9 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading;
 using NUnit.Framework;
 using UniLFS.Editor;
 
@@ -11,104 +7,17 @@ namespace UniLFS.Editor.Tests
 {
     /// <summary>
     /// Push and Pull run for real, between two clones of one project and the
-    /// storage they share: three directories, one per clone plus one standing in
-    /// for the bucket, with <see cref="FakeRemoteFileServer"/> in front of it.
+    /// storage they share — see <see cref="TwoCloneFixture"/> for the three
+    /// directories that make that situation.
     ///
-    /// The unit tests elsewhere pin the pieces — the three-way rules, the
-    /// baseline record, the signer, the manifest. What none of them can reach is
-    /// the thing UniLFS is for: whether content one person pushes actually
-    /// arrives for the next person, and whether that person's own work survives
-    /// the trip. Every rule about Outdated, Conflicted and rolled-back manifests
-    /// exists for a situation with two machines in it, and a single project
-    /// directory cannot produce one.
-    ///
-    /// "git" here is <see cref="Commit"/>: it carries the manifest, the managed
-    /// .gitignore and the .meta files between the two clones, and deliberately
-    /// leaves the tracked assets behind, because those are gitignored — which is
-    /// the whole reason Pull exists.
+    /// This is the round trip itself: content pushed here arrives there, and
+    /// nobody's work is undone on the way. The state patterns two clones can end
+    /// up in — one side has the file and the other does not, the two disagree
+    /// about a GUID, the same path holds different bytes — are walked in
+    /// <see cref="PullPushStatePatternTests"/>.
     /// </summary>
-    public class PullPushIntegrationTests
+    public class PullPushIntegrationTests : TwoCloneFixture
     {
-        const string Bucket = "unilfs-test";
-        const string Prefix = "unilfs";
-        const string AccessKeyId = "UNILFSTESTACCESSKEY";
-        const string SecretAccessKey = "unilfs-test-secret-access-key-0123456789";
-        const string Asset = "Assets/Art/big.bin";
-        const string SecondAsset = "Assets/Art/duplicate.bin";
-        const string AssetGuid = "0123456789abcdef0123456789abcdef";
-
-        string _tempRoot;
-        FakeRemoteFileServer _server;
-        Workspace _a;
-        Workspace _b;
-        CancellationTokenSource _deadline;
-        Dictionary<string, string> _savedEnvironment;
-        int _writes;
-
-        /// <summary>One clone: a project root with its own manifest, Library/ and settings.</summary>
-        class Workspace
-        {
-            public readonly string Name;
-            public readonly string Root;
-
-            public Workspace(string name, string root)
-            {
-                Name = name;
-                Root = root;
-            }
-
-            public string Abs(string projectRelativePath)
-            {
-                return Path.Combine(Root, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
-            }
-
-            public string ManifestPath
-            {
-                get { return Path.Combine(Root, UniLfsPaths.ManifestFileName); }
-            }
-        }
-
-        [SetUp]
-        public void SetUp()
-        {
-            _tempRoot = Path.Combine(Path.GetTempPath(), "unilfs-pullpush-" + Guid.NewGuid().ToString("N"));
-            // UniLFS never times its own transfers out on purpose (multi-gigabyte
-            // uploads must not hit a clock), so cancellation is the only thing
-            // standing between a wedged fixture and a hung editor.
-            _deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-
-            // Environment credentials outrank the per-project ones, so a machine
-            // with real ones configured would sign every request in here with
-            // them and get a 403 back. Cleared for the duration.
-            _savedEnvironment = new Dictionary<string, string>();
-            foreach (var name in new[] { UniLfsCredentials.EnvS3AccessKeyId, UniLfsCredentials.EnvS3SecretAccessKey })
-            {
-                _savedEnvironment[name] = Environment.GetEnvironmentVariable(name);
-                Environment.SetEnvironmentVariable(name, null);
-            }
-
-            _server = new FakeRemoteFileServer(Path.Combine(_tempRoot, "storage"), Bucket, AccessKeyId, SecretAccessKey);
-            _a = CreateWorkspace("clone-a");
-            _b = CreateWorkspace("clone-b");
-        }
-
-        [TearDown]
-        public void TearDown()
-        {
-            var faults = _server != null ? _server.Faults : new List<string>();
-            if (_server != null) _server.Dispose();
-            if (_deadline != null) _deadline.Dispose();
-            if (_savedEnvironment != null)
-                foreach (var kv in _savedEnvironment)
-                    Environment.SetEnvironmentVariable(kv.Key, kv.Value);
-            try { if (Directory.Exists(_tempRoot)) Directory.Delete(_tempRoot, true); }
-            catch (Exception) { }
-
-            // A test that read a 500 out of a broken fixture would otherwise
-            // report a product failure.
-            CollectionAssert.IsEmpty(faults, "the storage fixture itself failed");
-        }
-
         /// <summary>
         /// The round trip everything else builds on: one clone tracks and pushes,
         /// git carries the manifest, the other clone pulls the content down.
@@ -118,10 +27,12 @@ namespace UniLFS.Editor.Tests
         {
             WriteAsset(_a, Asset, "version one");
             AssertNoErrors(Track(_a, Asset));
+            Assert.IsFalse(InManifest(_a, Asset), "Track stages; Push is what records content the team can pull");
 
             var pushed = Push(_a);
             AssertNoErrors(pushed);
             Assert.AreEqual(1, pushed.Uploaded);
+            Assert.AreEqual(1, pushed.Promoted);
 
             string hash = ManifestHash(_a, Asset);
             Assert.IsTrue(_server.Has(Prefix, hash), "the blob should be a file in the storage directory");
@@ -263,23 +174,18 @@ namespace UniLFS.Editor.Tests
         }
 
         /// <summary>
-        /// A manifest is committed to git; the blobs it names are not. Verify is
-        /// what stops "I forgot to Push" from reaching everyone else as a file
-        /// nobody can download, and it has to keep working when storage loses a
-        /// blob afterwards.
+        /// A manifest is committed to git; the blobs it names are not. Push is
+        /// the only thing that writes an entry, and only for content storage
+        /// confirmed, so "I forgot to Push" can no longer produce a manifest
+        /// nobody can pull from. Verify covers what that guarantee cannot: a
+        /// hand-edited or badly merged manifest, and a bucket someone emptied
+        /// afterwards.
         /// </summary>
         [Test]
         public void VerifyReportsManifestEntriesStorageCannotBack()
         {
             WriteAsset(_a, Asset, "version one");
             AssertNoErrors(Track(_a, Asset));
-            Commit(_a, _b); // manifest committed, Push forgotten
-
-            var missing = Verify(_b);
-            Assert.IsTrue(missing.HasErrors, "an unpushed blob must fail Verify");
-            Assert.IsTrue(missing.Errors.Any(e => e.Contains(Asset)),
-                "the report should name the file: " + string.Join("; ", missing.Errors.ToArray()));
-
             AssertNoErrors(Push(_a));
             Commit(_a, _b);
             var clean = Verify(_b);
@@ -289,7 +195,40 @@ namespace UniLFS.Editor.Tests
             // Someone empties the bucket behind the project's back. The manifest
             // cannot notice on its own — asking storage is the only way.
             _server.Delete(Prefix, ManifestHash(_b, Asset));
-            Assert.IsTrue(Verify(_b).HasErrors, "a blob that left storage must stop passing Verify");
+            var missing = Verify(_b);
+            Assert.IsTrue(missing.HasErrors, "a blob that left storage must stop passing Verify");
+            Assert.IsTrue(missing.Errors.Any(e => e.Contains(Asset)),
+                "the report should name the file: " + string.Join("; ", missing.Errors.ToArray()));
+        }
+
+        /// <summary>
+        /// The failure the whole staging split removes: committing a manifest
+        /// entry for content that was never uploaded. Track cannot write one, so
+        /// a clone that carries the commit gets nothing to fail on.
+        /// </summary>
+        [Test]
+        public void TrackingWithoutPushingCommitsNothingForAnyoneToFailOn()
+        {
+            WriteAsset(_a, Asset, "version one");
+            AssertNoErrors(Track(_a, Asset));
+            CollectionAssert.AreEqual(new[] { Asset }, StagedPaths(_a));
+            CollectionAssert.IsEmpty(ManifestPaths(_a));
+
+            Commit(_a, _b); // the manifest is committed, the Push forgotten
+            CollectionAssert.IsEmpty(ManifestPaths(_b), "staging is local; it does not travel");
+            AssertNoErrors(Verify(_b));
+            CollectionAssert.IsEmpty(TrackedPaths(_b));
+
+            // And the file is hidden from git in the meantime, through the
+            // exclude file rather than the committed .gitignore.
+            CollectionAssert.Contains(LocallyExcluded(_a), "/" + Asset);
+            CollectionAssert.DoesNotContain(CommittedIgnoreLines(_a), "/" + Asset);
+
+            // Push moves it from one to the other, adding before removing.
+            AssertNoErrors(Push(_a));
+            CollectionAssert.Contains(CommittedIgnoreLines(_a), "/" + Asset);
+            CollectionAssert.DoesNotContain(LocallyExcluded(_a), "/" + Asset);
+            CollectionAssert.IsEmpty(StagedPaths(_a), "the manifest is the record now");
         }
 
         /// <summary>
@@ -303,7 +242,6 @@ namespace UniLFS.Editor.Tests
         {
             WriteAsset(_a, Asset, "version one");
             AssertNoErrors(Track(_a, Asset));
-            string tracked = ManifestHash(_a, Asset);
 
             using (UniLfsPaths.OverrideProjectRoot(_a.Root))
                 new UniLfsUserSettings { s3AccessKeyId = AccessKeyId, s3SecretAccessKey = "not-the-secret" }.Save();
@@ -311,8 +249,13 @@ namespace UniLFS.Editor.Tests
             var pushed = Push(_a);
             Assert.IsTrue(pushed.HasErrors, "a refused request must not pass for success");
             Assert.AreEqual(0, pushed.Uploaded);
+            Assert.AreEqual(0, pushed.Promoted);
             Assert.Greater(_server.Rejected, 0);
-            Assert.IsFalse(_server.Has(Prefix, tracked));
+            CollectionAssert.IsEmpty(_server.StoredHashes);
+            // A Push that could not confirm anything writes no entry, and the
+            // file stays staged: still tracked here, still nobody else's.
+            CollectionAssert.IsEmpty(ManifestPaths(_a));
+            CollectionAssert.AreEqual(new[] { Asset }, StagedPaths(_a));
         }
 
         /// <summary>
@@ -325,13 +268,12 @@ namespace UniLFS.Editor.Tests
         public void PulledAssetKeepsTheGuidTheOtherCloneRecorded()
         {
             WriteAsset(_a, Asset, "version one");
-            File.WriteAllText(_a.Abs(Asset) + UniLfsMetaFile.Extension,
-                "fileFormatVersion: 2\nguid: " + AssetGuid + "\n", new UTF8Encoding(false));
+            WriteMeta(_a, Asset, AssetGuid);
 
             AssertNoErrors(Track(_a, Asset));
-            Assert.AreEqual(AssetGuid, UniLfsManifest.Load(_a.ManifestPath).Find(Asset).guid,
-                "Track records the GUID so a clone can put it back");
             AssertNoErrors(Push(_a));
+            Assert.AreEqual(AssetGuid, ManifestGuid(_a, Asset),
+                "Push reads the GUID with the content, so a clone can put it back");
 
             // The .meta deliberately does not travel: this is the clone where
             // Unity already threw it away, because the gitignored asset was not
@@ -339,136 +281,8 @@ namespace UniLFS.Editor.Tests
             Commit(_a, _b, false);
             AssertNoErrors(Pull(_b));
 
-            Assert.AreEqual(AssetGuid, UniLfsMetaFile.ReadGuid(_b.Abs(Asset) + UniLfsMetaFile.Extension),
+            Assert.AreEqual(AssetGuid, MetaGuid(_b, Asset),
                 "a fresh GUID here would break every reference to the asset");
-        }
-
-        // ----- fixture -----
-
-        Workspace CreateWorkspace(string name)
-        {
-            string root = Path.Combine(_tempRoot, name);
-            Directory.CreateDirectory(Path.Combine(root, "Assets"));
-            using (UniLfsPaths.OverrideProjectRoot(root))
-            {
-                new UniLfsSettings
-                {
-                    provider = UniLfsSettings.ProviderS3,
-                    s3Endpoint = _server.Endpoint,
-                    s3Bucket = Bucket,
-                    s3Region = "auto",
-                    s3Prefix = Prefix,
-                    // More than one, so the parallel paths in Push and Pull are
-                    // the ones under test rather than a serial special case.
-                    parallelTransfers = 2,
-                }.Save();
-                new UniLfsUserSettings
-                {
-                    s3AccessKeyId = AccessKeyId,
-                    s3SecretAccessKey = SecretAccessKey,
-                }.Save();
-            }
-            return new Workspace(name, root);
-        }
-
-        /// <summary>Where a test starts from "the two clones were already in sync".</summary>
-        void SyncBothClones(string content)
-        {
-            WriteAsset(_a, Asset, content);
-            AssertNoErrors(Track(_a, Asset));
-            AssertNoErrors(Push(_a));
-            Commit(_a, _b);
-            var pulled = Pull(_b);
-            AssertNoErrors(pulled);
-            Assert.AreEqual(1, pulled.Downloaded, "the fixture should leave both clones in sync");
-            Assert.AreEqual(content, ReadAsset(_b, Asset));
-        }
-
-        /// <summary>
-        /// What git carries between the clones: the manifest, the managed
-        /// .gitignore and (unless a test is reproducing a clone that lost them)
-        /// the .meta files. The tracked assets are gitignored and stay put.
-        /// </summary>
-        void Commit(Workspace from, Workspace to, bool includeMeta = true)
-        {
-            File.Copy(from.ManifestPath, to.ManifestPath, true);
-            string gitignore = Path.Combine(from.Root, ".gitignore");
-            if (File.Exists(gitignore)) File.Copy(gitignore, Path.Combine(to.Root, ".gitignore"), true);
-            if (!includeMeta) return;
-            foreach (var meta in Directory.GetFiles(Path.Combine(from.Root, "Assets"), "*" + UniLfsMetaFile.Extension, SearchOption.AllDirectories))
-            {
-                string dest = Path.Combine(to.Root, meta.Substring(from.Root.Length + 1));
-                Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                File.Copy(meta, dest, true);
-            }
-        }
-
-        /// <summary>
-        /// Writes content and stamps a modification time no other write in this
-        /// test used. The state cache keys its hashes on (mtime, size), so two
-        /// writes landing in the same filesystem timestamp tick would be read
-        /// back as the same content.
-        /// </summary>
-        void WriteAsset(Workspace ws, string projectRelativePath, string content)
-        {
-            string abs = ws.Abs(projectRelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(abs));
-            File.WriteAllText(abs, content, new UTF8Encoding(false));
-            File.SetLastWriteTimeUtc(abs, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(++_writes));
-        }
-
-        static string ReadAsset(Workspace ws, string projectRelativePath)
-        {
-            return File.ReadAllText(ws.Abs(projectRelativePath), Encoding.UTF8);
-        }
-
-        string ManifestHash(Workspace ws, string projectRelativePath)
-        {
-            var entry = UniLfsManifest.Load(ws.ManifestPath).Find(projectRelativePath);
-            Assert.NotNull(entry, projectRelativePath + " is not in " + ws.Name + "'s manifest");
-            return entry.hash;
-        }
-
-        UniLfsOpResult Track(Workspace ws, params string[] projectRelativePaths)
-        {
-            using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-                return UniLfsCore.TrackAsync(projectRelativePaths, null, _deadline.Token).GetAwaiter().GetResult();
-        }
-
-        UniLfsOpResult Push(Workspace ws)
-        {
-            using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-                return UniLfsCore.PushAsync((IProgress<UniLfsProgress>)null, _deadline.Token).GetAwaiter().GetResult();
-        }
-
-        UniLfsOpResult Pull(Workspace ws, bool restoreModified = false)
-        {
-            using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-                return UniLfsCore.PullAsync(restoreModified, null, _deadline.Token).GetAwaiter().GetResult();
-        }
-
-        UniLfsOpResult Verify(Workspace ws)
-        {
-            using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-                return UniLfsCore.VerifyRemoteAsync(null, _deadline.Token).GetAwaiter().GetResult();
-        }
-
-        UniLfsFileState State(Workspace ws, string projectRelativePath)
-        {
-            using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-            {
-                var statuses = UniLfsCore.StatusAsync((IProgress<UniLfsProgress>)null, _deadline.Token)
-                    .GetAwaiter().GetResult();
-                var entry = statuses.Find(s => s.File.path == projectRelativePath);
-                Assert.NotNull(entry, projectRelativePath + " is not tracked in " + ws.Name);
-                return entry.State;
-            }
-        }
-
-        static void AssertNoErrors(UniLfsOpResult result)
-        {
-            if (result.Errors.Count > 0)
-                Assert.Fail("unexpected errors:\n  " + string.Join("\n  ", result.Errors.ToArray()));
         }
     }
 }

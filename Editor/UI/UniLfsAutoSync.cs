@@ -161,7 +161,7 @@ namespace UniLFS.Editor
                     Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) changed here and in the manifest since this project last synced, "
                         + "so neither version was picked:\n- " + string.Join("\n- ", result.Conflicted.ToArray())
                         + "\nTake the manifest's version with Window > UniLFS > Restore Modified, "
-                        + "or keep yours with Assets > UniLFS > Track Selected followed by Push.");
+                        + "or keep yours with Window > UniLFS > Keep Mine followed by Push.");
             }
             catch (UniLfsBusyException)
             {
@@ -189,7 +189,10 @@ namespace UniLFS.Editor
         static async Task CheckPushAsync(bool focused, bool fromImport)
         {
             if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
-            if (!File.Exists(UniLfsPaths.ManifestPath)) return;
+            // Staging counts as something to push: a file tracked but never
+            // uploaded is exactly what Auto Push is for, and before its first
+            // Push there is no manifest for it to appear in.
+            if (!File.Exists(UniLfsPaths.ManifestPath) && !File.Exists(UniLfsPaths.StagedPath)) return;
 
             var mode = UniLfsSettings.Load().AutoPushMode;
             if (mode == UniLfsAutoPushMode.Off) return;
@@ -218,7 +221,10 @@ namespace UniLFS.Editor
             // worth prompting about either; the window still lists them and an
             // explicit Push still takes them. This only decides whether to
             // offer - what the push itself touches is RunPush's requireBaseline.
-            var modified = statuses.FindAll(s => s.State == UniLfsFileState.Modified && s.BaselineKnown);
+            // Staged files join them: nothing else has ever seen that content,
+            // so there is no entry to roll back and nothing to guess about.
+            var modified = statuses.FindAll(s =>
+                (s.State == UniLfsFileState.Modified && s.BaselineKnown) || s.State == UniLfsFileState.Staged);
             if (modified.Count == 0) return;
 
             var sb = new StringBuilder();

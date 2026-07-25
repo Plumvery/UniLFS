@@ -15,10 +15,17 @@ namespace UniLFS.Editor
     /// - A (mtime, size) -> SHA-256 cache, so repeated status checks do not
     ///   re-hash unchanged multi-gigabyte files. Pure optimisation.
     /// - The sync baseline: the manifest hash this machine last agreed with for
-    ///   that file, recorded whenever Track, Push or Pull leaves the two in
-    ///   sync. This is what lets UniLFS tell "I edited this" from "someone else
-    ///   pushed a newer version" — two situations that look identical from the
-    ///   hashes alone (local != manifest) and need opposite fixes.
+    ///   that file, recorded whenever Push or Pull leaves the two in sync. This
+    ///   is what lets UniLFS tell "I edited this" from "someone else pushed a
+    ///   newer version" — two situations that look identical from the hashes
+    ///   alone (local != manifest) and need opposite fixes.
+    ///
+    ///   Track deliberately does not record one. Agreeing with a manifest entry
+    ///   this machine wrote for content nobody has uploaded is agreeing with
+    ///   itself, and it used to make an independently tracked file read as
+    ///   Outdated — "only the manifest moved" — so Pull replaced content that
+    ///   existed on one disk and in no bucket. Track now stages instead; see
+    ///   <see cref="UniLfsStagedPaths"/>.
     ///
     /// Deleting the file stays safe. Hashes come back on their own, and a file
     /// whose baseline is gone falls back to the conservative reading (Modified),
@@ -133,8 +140,9 @@ namespace UniLFS.Editor
 
         /// <summary>
         /// Records that local content and the manifest agree on
-        /// <paramref name="manifestHash"/> — after Track, a successful Push, or
-        /// a successful Pull. Everything after this compares against it.
+        /// <paramref name="manifestHash"/> — after a successful Push or Pull,
+        /// both of which mean storage has that content. Everything after this
+        /// compares against it.
         /// </summary>
         public void RecordSynced(string projectRelativePath, string manifestHash)
         {

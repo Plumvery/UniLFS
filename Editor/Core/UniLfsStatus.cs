@@ -25,6 +25,12 @@ namespace UniLFS.Editor
         Conflicted,
         /// <summary>Tracked in the manifest but missing on disk (needs Pull).</summary>
         MissingLocal,
+        /// <summary>
+        /// Staged here and not in the manifest: this machine asked to track it,
+        /// nothing has been uploaded, and nobody else can see it yet. Needs
+        /// Push, which is what writes the manifest entry.
+        /// </summary>
+        Staged,
     }
 
     /// <summary>
@@ -98,6 +104,14 @@ namespace UniLFS.Editor
         /// already had.
         /// </summary>
         public List<string> Failures = new List<string>();
+        /// <summary>
+        /// Staged files that no ignore rule covers, because this project is not
+        /// in a git checkout UniLFS could write <c>.git/info/exclude</c> for.
+        /// They are not in the manifest either, so the committed .gitignore
+        /// does not name them — which leaves a large file one <c>git add -A</c>
+        /// from the history, and this list the only warning about it.
+        /// </summary>
+        public List<string> NotIgnored = new List<string>();
     }
 
     /// <summary>
@@ -138,12 +152,24 @@ namespace UniLFS.Editor
         public int Uploaded;
         public int Downloaded;
         public int Skipped;
+        /// <summary>Files Track staged for their first Push.</summary>
         public int TrackedNew;
         public int TrackedUpdated;
+        /// <summary>
+        /// Staged files Push turned into manifest entries, once storage
+        /// confirmed their content. This is the moment a file stops being one
+        /// machine's private decision and becomes something the team has.
+        /// </summary>
+        public int Promoted;
         public int Untracked;
         public List<string> MissingLocal = new List<string>();
         public List<string> KeptModified = new List<string>();
         public List<string> NewlyTracked = new List<string>();
+        /// <summary>
+        /// Staged files nothing is ignoring — see
+        /// <see cref="UniLfsStatusReport.NotIgnored"/>.
+        /// </summary>
+        public List<string> NotIgnored = new List<string>();
         /// <summary>
         /// Files Push refused to upload because the local copy is older than the
         /// manifest. Pushing them would roll the manifest back to this machine's
@@ -151,11 +177,13 @@ namespace UniLFS.Editor
         /// </summary>
         public List<string> Outdated = new List<string>();
         /// <summary>
-        /// Files where local content and the manifest both moved since this
-        /// machine last synced. Push and Pull leave these alone; Track resolves
-        /// them in favour of the local copy and lists them here so that choice
-        /// gets reported rather than made silently. No consumer sees both kinds
-        /// of result, so the two readings never meet.
+        /// Files where local content and what the manifest names both moved
+        /// since this machine last synced — or where both sides tracked the
+        /// same path independently, which has no shared history at all. Push,
+        /// Pull and Track all leave these alone and list them here: picking a
+        /// side is a decision, and the only things that make it are Restore
+        /// Modified ("take theirs") and <see cref="UniLfsCore.KeepLocal"/>
+        /// ("keep mine"), which lists what it recorded here too.
         /// </summary>
         public List<string> Conflicted = new List<string>();
         /// <summary>

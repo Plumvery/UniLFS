@@ -44,8 +44,8 @@ flowchart LR
     M <-- "git push / pull" --> G
 ```
 
-1. **Track** — you pick large files; UniLFS records their SHA-256 in `unilfs.manifest.json` and adds them to a managed `.gitignore` block.
-2. **Push** — blobs missing from the remote are uploaded (`objects/<aa>/<sha256>`, deduplicated). The manifest only records a new hash after its blob is confirmed uploaded, so a committed manifest never points at a missing blob.
+1. **Track** — you pick large files; UniLFS stages them locally (`unilfs.staged.json`) and hides them from git through `.git/info/exclude` right away. Nothing is hashed and nothing committed changes: staging is this machine's intent, not a claim about what exists.
+2. **Push** — blobs missing from the remote are uploaded (`objects/<aa>/<sha256>`, deduplicated), and *only then* does the file get its entry in `unilfs.manifest.json` and its line in the managed `.gitignore` block. An entry exists only once storage has the content, for new files as well as changed ones, so a committed manifest never points at a missing blob.
 3. **Pull** — teammates (or CI) download whatever the manifest lists that is missing locally, or that someone else has since pushed a newer version of. Downloads are verified against the manifest hash before touching your project.
 
 Editing a tracked file is just: edit → **Push** → commit the manifest change. Switching branches: checkout → **Pull**. Both directions can happen [automatically](#-auto-sync--no-git-hooks-needed).
@@ -56,6 +56,7 @@ Editing a tracked file is just: edit → **Push** → commit the manifest change
 ```
 your-project/
 ├── unilfs.manifest.json     ← committed to git (small: path + sha256 + size)
+├── unilfs.staged.json       ← never committed: tracked here, not pushed yet
 ├── .gitignore               ← UniLFS maintains a managed block in here
 ├── Assets/
 │   ├── Big/model.fbx        ← gitignored, restored by UniLFS
@@ -129,14 +130,15 @@ Google Drive instead? See [Documentation~/setup-google-drive.md](Documentation~/
 | Button | What it does |
 |--------|--------------|
 | Refresh | Re-checks every tracked file, and asks storage whether it really has their blobs |
-| Push | Uploads new/changed blobs, then updates the manifest |
+| Push | Uploads new/changed blobs, then records them in the manifest |
 | Pull | Downloads files that are missing locally or superseded by a newer version |
 | Restore Modified | Overwrites locally modified and conflicting files with the manifest version (asks first) |
+| Keep Mine | Resolves conflicting files in favour of your copy — recorded, then uploaded by the next Push |
 | Track / Untrack Selected | Same as the `Assets > UniLFS` context menu |
 
-File states: **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but was never uploaded from this machine — typically tracked but not yet pushed) / **modified** (your local edit, not pushed) / **outdated** (someone else pushed a newer version — run Pull) / **conflicted** (changed here *and* in the manifest since you last synced) / **missing** (needs Pull).
+File states: **staged** (tracked here, never uploaded, so it is not in the manifest and nobody else can see it — run Push) / **up to date** (matches the manifest and the blob is confirmed in storage) / **not pushed** (matches the manifest but this machine has no proof the blob was uploaded) / **modified** (your local edit, not pushed) / **outdated** (someone else pushed a newer version — run Pull) / **conflicted** (changed here *and* in the manifest since you last synced, or tracked separately on both sides) / **missing** (needs Pull).
 
-Telling **modified** from **outdated** takes a third fact, because both just mean "local differs from the manifest" and they need opposite buttons. UniLFS records under `Library/UniLFS/` which manifest hash each file was last in sync with on this machine, and compares against that — the same way a merge base decides which side of a diff actually moved. A **conflicted** file is the case where that comparison says *both* sides moved; resolve it by hand with **Restore Modified** (take the manifest's version) or **Track Selected** then Push (keep yours).
+Telling **modified** from **outdated** takes a third fact, because both just mean "local differs from the manifest" and they need opposite buttons. UniLFS records under `Library/UniLFS/` which manifest hash each file was last in sync with on this machine, and compares against that — the same way a merge base decides which side of a diff actually moved. A **conflicted** file is the case where that comparison says *both* sides moved, or where there is no shared history at all because two people tracked the same path independently; resolve it by hand with **Restore Modified** (take the manifest's version) or **Keep Mine** then Push (keep yours).
 
 Delete `Library/UniLFS/` and any file that is already diverged at that moment reads as **modified** again — the conservative answer, since nothing gets overwritten on a guess. Auto Push leaves those alone rather than assuming yours is the newer one; an explicit Push still takes them. Every file re-learns its baseline the next time local and manifest agree.
 
@@ -158,9 +160,10 @@ Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state i
 
 | File | Committed? | Contents |
 |------|-----------|----------|
-| `unilfs.manifest.json` | ✅ | tracked paths + SHA-256 + size |
+| `unilfs.manifest.json` | ✅ | tracked paths + SHA-256 + size, for content Push confirmed is in storage |
+| `unilfs.staged.json` | ❌ (auto-gitignored) | paths tracked on this machine and not pushed yet |
 | `ProjectSettings/UniLFSSettings.json` | ✅ | provider, endpoint, bucket, folder ID, ... |
-| `.gitignore` (managed block) | ✅ | tracked file paths, credential file |
+| `.gitignore` (managed block) | ✅ | the manifest's paths, the credential file, the staging file |
 | `UserSettings/UniLFS.json` | ❌ (auto-gitignored) | access keys, OAuth refresh token |
 
 Environment variables override everything (useful for CI):

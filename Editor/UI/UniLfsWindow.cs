@@ -98,6 +98,12 @@ namespace UniLFS.Editor
                         "Restore", "Cancel"))
                         RunOperation("Restore", (p, ct) => UniLfsCore.PullAsync(true, p, ct), true);
                 }
+                // The other half of the same decision, next to it: Restore
+                // Modified is "take theirs", and until this existed the only way
+                // to say "keep mine" was to re-run Track, which rewrote the
+                // committed manifest to do it.
+                if (GUILayout.Button(new GUIContent("Keep Mine", "Resolve conflicting files in favour of the local copy, then Push to upload it"), EditorStyles.toolbarButton, GUILayout.Width(75)))
+                    KeepMine();
                 GUILayout.Space(12);
                 // Local-only refreshes: Track/Untrack change the manifest, not
                 // what storage holds.
@@ -115,6 +121,45 @@ namespace UniLFS.Editor
             if (GUILayout.Button("Settings", EditorStyles.toolbarButton, GUILayout.Width(60)))
                 SettingsService.OpenProjectSettings("Project/UniLFS");
             EditorGUILayout.EndHorizontal();
+        }
+
+        /// <summary>
+        /// Records "the local copy wins" for every conflicting file, which the
+        /// next Push acts on. Nothing is uploaded here: the decision and the
+        /// upload are separate on purpose, so an interrupted Push cannot leave
+        /// half a resolution behind.
+        /// </summary>
+        void KeepMine()
+        {
+            var conflicted = new List<string>();
+            if (_statuses != null)
+                foreach (var s in _statuses)
+                    if (s.State == UniLfsFileState.Conflicted) conflicted.Add(s.File.path);
+            if (conflicted.Count == 0)
+            {
+                _lastMessage = "Keep Mine: no conflicting files.";
+                return;
+            }
+            if (!EditorUtility.DisplayDialog("UniLFS - Keep Mine",
+                "Resolve " + conflicted.Count + " conflicting file(s) in favour of the copy on this machine?\n\n"
+                + "Nothing is uploaded yet - press Push afterwards. The version the manifest names now will stop being referenced, "
+                + "but its blob stays in storage.",
+                "Keep Mine", "Cancel"))
+                return;
+            try
+            {
+                var result = UniLfsCore.KeepLocal(conflicted);
+                _lastMessage = "Keep Mine: " + result.Conflicted.Count + " file(s) will be pushed from this machine's copy. Press Push.";
+                if (result.HasErrors)
+                    Debug.LogWarning("UniLFS Keep Mine:\n- " + string.Join("\n- ", result.Errors));
+                else
+                    Debug.Log("UniLFS " + _lastMessage);
+            }
+            catch (UniLfsBusyException e)
+            {
+                _lastMessage = e.Message;
+            }
+            RefreshStatus();
         }
 
         void DrawHeader()
@@ -210,7 +255,7 @@ namespace UniLFS.Editor
                     "No files are tracked yet.\n\n" +
                     "1. Configure a storage provider in Project Settings > UniLFS.\n" +
                     "2. Select large assets in the Project window and run Assets > UniLFS > Track Selected.\n" +
-                    "3. Press Push to upload them, then commit unilfs.manifest.json and .gitignore.",
+                    "3. Press Push: that uploads them and records them in unilfs.manifest.json. Commit it and .gitignore afterwards.",
                     MessageType.Info);
                 return;
             }
@@ -226,7 +271,9 @@ namespace UniLFS.Editor
                 GUI.color = color;
                 GUILayout.Label(new GUIContent("●", tooltip), GUILayout.Width(16));
                 GUI.color = previous;
-                GUILayout.Label(new GUIContent(s.File.path, s.File.path + "\nsha256: " + s.File.hash), GUILayout.ExpandWidth(true));
+                GUILayout.Label(new GUIContent(s.File.path, s.File.path + "\n"
+                    + (string.IsNullOrEmpty(s.File.hash) ? "not in the manifest yet - Push records it" : "sha256: " + s.File.hash)),
+                    GUILayout.ExpandWidth(true));
                 GUILayout.Label(EditorUtility.FormatBytes(s.File.size), EditorStyles.miniLabel, GUILayout.Width(80));
                 GUILayout.Label(new GUIContent(badge, tooltip), EditorStyles.miniLabel, GUILayout.Width(90));
                 EditorGUILayout.EndHorizontal();
@@ -239,7 +286,7 @@ namespace UniLFS.Editor
             GUILayout.FlexibleSpace();
             if (_statuses != null && _statuses.Count > 0)
             {
-                int upToDate = 0, notPushed = 0, modified = 0, outdated = 0, conflicted = 0, missing = 0;
+                int upToDate = 0, notPushed = 0, modified = 0, outdated = 0, conflicted = 0, missing = 0, staged = 0;
                 long totalSize = 0;
                 foreach (var s in _statuses)
                 {
@@ -253,13 +300,15 @@ namespace UniLFS.Editor
                         case UniLfsFileState.Outdated: outdated++; break;
                         case UniLfsFileState.Conflicted: conflicted++; break;
                         case UniLfsFileState.MissingLocal: missing++; break;
+                        case UniLfsFileState.Staged: staged++; break;
                     }
                 }
                 // The four everyday states always show, so their numbers stay in
-                // the same place; the two that mean "someone else moved" only
-                // take up room when there is something to say.
+                // the same place; the three that mean "someone has to do
+                // something" only take up room when there is something to say.
                 string summary = _statuses.Count + " tracked (" + EditorUtility.FormatBytes(totalSize) + ")  |  " +
                     upToDate + " up to date, " + notPushed + " not pushed, " + modified + " modified, " + missing + " missing";
+                if (staged > 0) summary += ", " + staged + " staged";
                 if (outdated > 0) summary += ", " + outdated + " outdated";
                 if (conflicted > 0) summary += ", " + conflicted + " conflicted";
                 GUILayout.Label(summary, EditorStyles.miniLabel);
@@ -271,16 +320,27 @@ namespace UniLFS.Editor
         }
 
         /// <summary>
-        /// Six states. "Matches the manifest" and "exists in remote storage" are
-        /// different questions — a freshly tracked file matches the manifest
-        /// immediately while living nowhere but this disk — and a file that
-        /// differs from the manifest still has to say which side moved, because
-        /// your own edit and someone else's push need opposite buttons.
+        /// Seven states. "Tracked here" and "in the manifest" are different
+        /// questions — a staged file is one machine's decision until Push makes
+        /// it everyone's — and so are "matches the manifest" and "exists in
+        /// remote storage". A file that differs from the manifest still has to
+        /// say which side moved, because your own edit and someone else's push
+        /// need opposite buttons.
         /// </summary>
         static string StateBadge(UniLfsStatusEntry entry, out Color color, out string tooltip)
         {
             switch (entry.State)
             {
+                case UniLfsFileState.Staged:
+                    // The same blue as "not pushed" on purpose: to the person
+                    // looking, both mean nobody else can see this yet. The
+                    // difference is that this one is definite - there is no
+                    // manifest entry - while "not pushed" is inferred from a
+                    // per-machine record.
+                    color = new Color(0.45f, 0.65f, 0.95f);
+                    tooltip = "Tracked on this machine and not uploaded yet, so it is not in the manifest and nobody else can see it. "
+                        + "Run Push: that is what records it for everyone.";
+                    return "staged";
                 case UniLfsFileState.Modified:
                     color = new Color(0.95f, 0.75f, 0.2f);
                     tooltip = "Locally changed since the last Push. Run Push to upload the new version.";
@@ -292,12 +352,16 @@ namespace UniLFS.Editor
                     return "outdated";
                 case UniLfsFileState.Conflicted:
                     color = new Color(0.9f, 0.45f, 0.85f);
-                    tooltip = "Changed here and in the manifest since you last synced, so neither version wins automatically. "
-                        + "Take the manifest's with Restore Modified, or keep yours with Track Selected and then Push.";
+                    tooltip = "Changed here and in the manifest since you last synced - or tracked separately on both sides - "
+                        + "so neither version wins automatically. Take the manifest's with Restore Modified, or keep yours with "
+                        + "Keep Mine and then Push.";
                     return "conflicted";
                 case UniLfsFileState.MissingLocal:
                     color = new Color(0.95f, 0.35f, 0.3f);
-                    tooltip = "Tracked but not on disk. Run Pull to download it.";
+                    tooltip = string.IsNullOrEmpty(entry.File.hash)
+                        ? "Staged here but not on disk, and never uploaded - there is nothing to download it from. "
+                          + "Put the file back, or untrack it."
+                        : "Tracked but not on disk. Run Pull to download it.";
                     return "missing";
                 default:
                     if (!entry.RemoteKnown)
@@ -345,6 +409,7 @@ namespace UniLFS.Editor
                     _lastMessage = "Refreshed local state only - checking storage needs " + UniLfsProviderStatus.Describe(_missingConfig) + ".";
                 else if (report.Verified)
                     ReportVerify(report);
+                ReportNotIgnored(report.NotIgnored);
             }
             catch (OperationCanceledException)
             {
@@ -465,10 +530,27 @@ namespace UniLFS.Editor
                     + string.Join("\n- ", report.Failures));
         }
 
+        /// <summary>
+        /// A staged file that nothing ignores is the one failure mode this
+        /// split introduces, so it gets said out loud rather than counted: it
+        /// is not in the manifest, so the committed .gitignore does not cover
+        /// it, and there was no checkout to write .git/info/exclude in.
+        /// </summary>
+        void ReportNotIgnored(List<string> notIgnored)
+        {
+            if (notIgnored == null || notIgnored.Count == 0) return;
+            _lastMessage = notIgnored.Count + " staged file(s) are not hidden from git - see the Console.";
+            Debug.LogWarning("UniLFS: " + notIgnored.Count + " staged file(s) are not covered by any ignore rule, because this project"
+                + " is not in a git checkout UniLFS could write .git/info/exclude in. Until you Push them (which puts them in"
+                + " unilfs.manifest.json and .gitignore), 'git add -A' would commit them for real:\n- "
+                + string.Join("\n- ", notIgnored.ToArray()));
+        }
+
         static string Summarize(string label, UniLfsOpResult r)
         {
             var parts = new List<string>();
             if (r.Uploaded > 0) parts.Add("uploaded " + r.Uploaded);
+            if (r.Promoted > 0) parts.Add(r.Promoted + " now in the manifest");
             if (r.Downloaded > 0) parts.Add("downloaded " + r.Downloaded);
             if (r.Skipped > 0) parts.Add(r.Skipped + " up to date");
             if (r.MissingLocal.Count > 0) parts.Add(r.MissingLocal.Count + " missing locally (not pushed)");

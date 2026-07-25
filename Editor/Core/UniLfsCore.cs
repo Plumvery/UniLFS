@@ -68,6 +68,7 @@ namespace UniLFS.Editor
         {
             var settings = UniLfsSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var remote = UniLfsRemoteBlobCache.Load(settings);
             var reporter = new UniLfsProgressReporter(progress);
@@ -101,7 +102,8 @@ namespace UniLFS.Editor
                         report.Failures.Add(e.Message);
                     }
                 }
-                report.Files = await StatusInternalAsync(manifest, cache, remote, reporter, start, span, ct).ConfigureAwait(false);
+                report.Files = await StatusInternalAsync(manifest, staged, cache, remote, reporter, start, span, ct).ConfigureAwait(false);
+                report.NotIgnored = StagedPathsNothingIgnores(staged);
                 reporter.Finish();
                 return report;
             }
@@ -115,9 +117,10 @@ namespace UniLFS.Editor
             }
         }
 
-        static async Task<List<UniLfsStatusEntry>> StatusInternalAsync(UniLfsManifest manifest, UniLfsStateCache cache, UniLfsRemoteBlobCache remote, UniLfsProgressReporter reporter, float start, float span, CancellationToken ct)
+        static async Task<List<UniLfsStatusEntry>> StatusInternalAsync(UniLfsManifest manifest, UniLfsStagedPaths staged, UniLfsStateCache cache, UniLfsRemoteBlobCache remote, UniLfsProgressReporter reporter, float start, float span, CancellationToken ct)
         {
-            reporter.BeginPhase("Checking files", start, span, manifest.files.Count, TotalSize(manifest.files));
+            var stagedOnly = staged.paths.Where(p => manifest.Find(p) == null).ToList();
+            reporter.BeginPhase("Checking files", start, span, manifest.files.Count + stagedOnly.Count, TotalSize(manifest.files));
             var result = new List<UniLfsStatusEntry>();
             foreach (var f in manifest.files)
             {
@@ -144,6 +147,15 @@ namespace UniLFS.Editor
                         entry.CurrentSize = info.Length;
                         entry.CurrentHash = await cache.GetHashAsync(f.path, item.Ratio(info.Length), ct).ConfigureAwait(false);
                         entry.State = UniLfsThreeWay.Classify(entry.CurrentHash, f.hash, baseline);
+                        // Staged as well as in the manifest: both sides tracked
+                        // this path independently, so there is no shared history
+                        // to attribute the difference to and nothing here may
+                        // pick a winner. Without this it would read as Modified
+                        // (or, on a baseline Track used to record, as Outdated)
+                        // and Pull would overwrite content that was never
+                        // pushed anywhere.
+                        if (entry.State != UniLfsFileState.UpToDate && staged.Contains(f.path))
+                            entry.State = UniLfsFileState.Conflicted;
                         // Local and manifest agreeing is itself a synced state,
                         // so files that predate baselines - or whose Library/
                         // was wiped - adopt one here rather than staying
@@ -157,12 +169,59 @@ namespace UniLFS.Editor
                 }
                 result.Add(entry);
             }
+
+            // Staged paths have no manifest entry to compare against - that is
+            // what being staged means - so they are reported from what is on
+            // disk. No hash is taken: nothing would read it, and a freshly
+            // staged file is exactly the one worth not hashing on every check.
+            foreach (var path in stagedOnly)
+            {
+                ct.ThrowIfCancellationRequested();
+                var info = new FileInfo(UniLfsPaths.ToAbsolute(path));
+                using (reporter.Begin(path, 0))
+                {
+                    result.Add(new UniLfsStatusEntry
+                    {
+                        File = new UniLfsManifestFile { path = path, hash = "", size = info.Exists ? info.Length : 0 },
+                        State = info.Exists && !UniLfsPlaceholder.IsPlaceholder(info.FullName)
+                            ? UniLfsFileState.Staged
+                            : UniLfsFileState.MissingLocal,
+                    });
+                }
+            }
+            result.Sort((a, b) => string.CompareOrdinal(a.File.path, b.File.path));
             return result;
         }
 
         /// <summary>
-        /// Adds files to the manifest (or refreshes their hash) and gitignores
-        /// them. Does not upload — run Push afterwards.
+        /// Staged paths that no ignore rule covers. They are not in the
+        /// manifest, so the committed .gitignore does not name them, and
+        /// <see cref="UniLfsGitExclude"/> could not write them either - which
+        /// leaves a large file one <c>git add -A</c> from the history, and this
+        /// report the only thing that says so.
+        /// </summary>
+        static List<string> StagedPathsNothingIgnores(UniLfsStagedPaths staged)
+        {
+            var unignored = new List<string>();
+            if (staged.paths.Count == 0) return unignored;
+            var location = UniLfsGitExclude.Find(UniLfsPaths.ProjectRoot);
+            if (location == null) return new List<string>(staged.paths);
+            var lines = new HashSet<string>(UniLfsGitExclude.ReadManagedLines(UniLfsPaths.ProjectRoot));
+            foreach (var path in staged.paths)
+                if (!lines.Contains(UniLfsIgnoreBlock.Escape(location.PathPrefix + path)))
+                    unignored.Add(path);
+            return unignored;
+        }
+
+        /// <summary>
+        /// Stages files for tracking and hides them from git locally. Writes
+        /// neither the manifest nor an upload — run Push afterwards, which is
+        /// what turns a staged path into a manifest entry everyone else sees.
+        ///
+        /// Nothing is hashed here for a file that is not tracked yet: Push
+        /// hashes what it is about to upload, and reading gigabytes to write a
+        /// line nobody else can see yet would only make Track slow enough to
+        /// avoid.
         /// </summary>
         public static async Task<UniLfsOpResult> TrackAsync(IEnumerable<string> paths, IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
@@ -173,13 +232,14 @@ namespace UniLFS.Editor
         static async Task<UniLfsOpResult> TrackUnlockedAsync(IEnumerable<string> paths, IProgress<UniLfsProgress> progress, CancellationToken ct)
         {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
             var list = paths.ToList();
             var reporter = new UniLfsProgressReporter(progress);
             try
             {
-                reporter.BeginPhase("Hashing", 0f, 1f, list.Count, 0);
+                reporter.BeginPhase("Tracking", 0f, 1f, list.Count, 0);
                 foreach (var raw in list)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -199,67 +259,58 @@ namespace UniLFS.Editor
                         reporter.Begin(rel, 0).Dispose();
                         continue;
                     }
-                    long size = new FileInfo(abs).Length;
                     var existing = manifest.Find(rel);
+                    if (existing == null)
+                    {
+                        using (reporter.Begin(rel, 0))
+                        {
+                            if (staged.Add(rel))
+                            {
+                                result.TrackedNew++;
+                                result.NewlyTracked.Add(rel);
+                            }
+                            else
+                            {
+                                result.Skipped++;
+                            }
+                        }
+                        continue;
+                    }
+                    // Already in the manifest, so the team already has this
+                    // path and there is nothing to start tracking. Editing a
+                    // tracked file needs no Track either - Push picks local
+                    // changes up on its own. The one thing worth saying is
+                    // when the file is in a state a person has to decide,
+                    // because Track used to be how that decision was made and
+                    // it silently rewrote a committed manifest to make it.
+                    long size = new FileInfo(abs).Length;
                     string hash;
                     using (var item = reporter.Begin(rel, size))
                         hash = await cache.GetHashAsync(rel, item.Ratio(size), ct).ConfigureAwait(false);
-                    var state = existing == null
-                        ? UniLfsFileState.UpToDate
-                        : UniLfsThreeWay.Classify(hash, existing.hash, cache.GetBaseline(rel));
-                    // Re-tracking a file whose manifest entry moved on while
-                    // this copy stayed put would rewrite the entry back to this
-                    // stale content - the same rollback Push refuses. Nothing is
-                    // lost by declining: Pull delivers the newer version.
-                    if (state == UniLfsFileState.Outdated)
-                    {
-                        result.Outdated.Add(rel);
-                        continue;
-                    }
-                    // Conflicted falls through on purpose. Track is the "keep
-                    // mine" half of resolving a conflict - Restore Modified is
-                    // "take theirs" - and it is the only way to declare local
-                    // content the winner. Recorded so the choice is not silent:
-                    // it does overwrite whatever the manifest named.
+                    var state = UniLfsThreeWay.Classify(hash, existing.hash, cache.GetBaseline(rel));
+                    if (state != UniLfsFileState.UpToDate && staged.Contains(rel))
+                        state = UniLfsFileState.Conflicted;
                     if (state == UniLfsFileState.Conflicted) result.Conflicted.Add(rel);
-                    // Recorded so a clone, which gets the .meta but not the
-                    // gitignored asset, can put the GUID back instead of
-                    // letting Unity mint a new one. See UniLfsMetaGuard.
-                    string guid = UniLfsMetaFile.ReadGuid(UniLfsMetaFile.PathFor(abs));
-                    if (existing == null)
-                    {
-                        manifest.Upsert(rel, hash, size).guid = guid;
-                        result.TrackedNew++;
-                        result.NewlyTracked.Add(rel);
-                    }
-                    else if (existing.hash != hash || existing.size != size
-                             || (guid != null && existing.guid != guid))
-                    {
-                        // Never clears a recorded GUID: a missing .meta at this
-                        // moment says nothing about the one everyone else has.
-                        manifest.Upsert(rel, hash, size).guid = guid ?? existing.guid;
-                        result.TrackedUpdated++;
-                    }
-                    else
-                    {
-                        result.Skipped++;
-                    }
-                    // Track always leaves local content and the manifest in
-                    // agreement, whichever branch got here.
-                    cache.RecordSynced(rel, hash);
+                    else if (state == UniLfsFileState.Outdated) result.Outdated.Add(rel);
+                    else result.Skipped++;
                 }
                 reporter.Finish();
             }
             finally
             {
-                manifest.Save(UniLfsPaths.ManifestPath);
+                staged.Save(UniLfsPaths.StagedPath);
+                if (!UniLfsGitExclude.Update(UniLfsPaths.ProjectRoot, staged.paths))
+                    result.NotIgnored.AddRange(staged.paths);
+                // Still refreshed, and still only from the manifest: the block
+                // also carries the two per-user file lines, and this is the
+                // first moment a project is guaranteed to have one.
                 UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, manifest.files.Select(f => f.path));
                 cache.Save();
             }
             return result;
         }
 
-        /// <summary>Removes files from the manifest. Files stay on disk.</summary>
+        /// <summary>Removes files from the manifest and from staging. Files stay on disk.</summary>
         public static UniLfsOpResult Untrack(IEnumerable<string> paths)
         {
             using (UniLfsOperationLock.Acquire("Untrack"))
@@ -269,26 +320,65 @@ namespace UniLFS.Editor
         static UniLfsOpResult UntrackUnlocked(IEnumerable<string> paths)
         {
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
             foreach (var raw in paths)
             {
                 string rel = UniLfsPaths.ToProjectRelative(raw);
                 if (rel == null) rel = UniLfsPaths.Normalize(raw);
-                if (manifest.Remove(rel))
+                bool removed = manifest.Remove(rel);
+                removed |= staged.Remove(rel);
+                if (removed)
                 {
                     cache.Forget(rel);
-                    // The path leaves the managed .gitignore block with this
-                    // call, so a placeholder left behind would stop being
-                    // ignored and could be committed as if it were the asset.
+                    // The path leaves both ignore blocks with this call, so a
+                    // placeholder left behind would stop being ignored and
+                    // could be committed as if it were the asset.
                     UniLfsPlaceholder.Clear(UniLfsPaths.ToAbsolute(rel));
                     result.Untracked++;
                 }
             }
             manifest.Save(UniLfsPaths.ManifestPath);
             UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, manifest.files.Select(f => f.path));
+            staged.Save(UniLfsPaths.StagedPath);
+            UniLfsGitExclude.Update(UniLfsPaths.ProjectRoot, staged.paths);
             cache.Save();
             return result;
+        }
+
+        /// <summary>
+        /// Records that the local copy of these files wins over what the
+        /// manifest names — the "keep mine" half of resolving a conflict, with
+        /// Pull's restoreModified being "take theirs". Uploads nothing by
+        /// itself: the decision is consumed by the next Push, which is also
+        /// where it becomes visible to anyone else.
+        ///
+        /// A decision on record rather than an argument Push is called with, so
+        /// that Auto Push can honour it too. Nothing else may pick a side of a
+        /// conflict, so nothing else does.
+        /// </summary>
+        public static UniLfsOpResult KeepLocal(IEnumerable<string> paths)
+        {
+            using (UniLfsOperationLock.Acquire("Keep Mine"))
+            {
+                var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+                var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
+                var result = new UniLfsOpResult();
+                foreach (var raw in paths)
+                {
+                    string rel = UniLfsPaths.ToProjectRelative(raw);
+                    if (rel == null) rel = UniLfsPaths.Normalize(raw);
+                    if (manifest.Find(rel) == null && !staged.Contains(rel))
+                    {
+                        result.Errors.Add(rel + ": not tracked");
+                        continue;
+                    }
+                    if (staged.KeepLocal(rel)) result.Conflicted.Add(rel);
+                }
+                staged.Save(UniLfsPaths.StagedPath);
+                return result;
+            }
         }
 
         class CurrentFile
@@ -298,9 +388,36 @@ namespace UniLFS.Editor
         }
 
         /// <summary>
+        /// One file Push has to consider: everything the manifest names, plus
+        /// everything staged that it does not name yet. A staged path has no
+        /// <see cref="Entry"/> — that is exactly what Push is about to give it.
+        /// </summary>
+        class PushCandidate
+        {
+            public string Path;
+            public UniLfsManifestFile Entry;
+        }
+
+        static List<PushCandidate> PushCandidates(UniLfsManifest manifest, UniLfsStagedPaths staged)
+        {
+            var candidates = manifest.files
+                .Select(f => new PushCandidate { Path = f.path, Entry = f })
+                .ToList();
+            foreach (var path in staged.paths)
+                if (manifest.Find(path) == null)
+                    candidates.Add(new PushCandidate { Path = path, Entry = null });
+            return candidates;
+        }
+
+        /// <summary>
         /// Re-hashes tracked files, uploads blobs the remote is missing, and only
         /// then records new hashes in the manifest — so a committed manifest never
         /// references a blob that failed to upload.
+        ///
+        /// This is also where a staged path becomes a manifest entry. Track puts
+        /// paths in <see cref="UniLfsStagedPaths"/> and stops there precisely so
+        /// that the rule above covers new files as well as changed ones: an
+        /// entry exists only once its content is in storage.
         /// </summary>
         public static async Task<UniLfsOpResult> PushAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
         {
@@ -326,9 +443,11 @@ namespace UniLFS.Editor
             var settings = UniLfsSettings.Load();
             var user = UniLfsUserSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
-            if (manifest.files.Count == 0) return result;
+            var candidates = PushCandidates(manifest, staged);
+            if (candidates.Count == 0) return result;
 
             var current = new Dictionary<string, CurrentFile>();
             var presentOnRemote = new HashSet<string>();
@@ -340,11 +459,11 @@ namespace UniLFS.Editor
             {
                 try
                 {
-                    reporter.BeginPhase("Hashing", 0f, PushHashSpan, manifest.files.Count, TotalSize(manifest.files));
-                    foreach (var f in manifest.files)
+                    reporter.BeginPhase("Hashing", 0f, PushHashSpan, candidates.Count, TotalSize(manifest.files));
+                    foreach (var c in candidates)
                     {
                         ct.ThrowIfCancellationRequested();
-                        string abs = UniLfsPaths.ToAbsolute(f.path);
+                        string abs = UniLfsPaths.ToAbsolute(c.Path);
                         var info = new FileInfo(abs);
                         // Placeholders must never reach the upload path: the
                         // manifest is rewritten from what was hashed here, so
@@ -352,24 +471,44 @@ namespace UniLFS.Editor
                         // and orphan the real blob.
                         if (!info.Exists || UniLfsPlaceholder.IsPlaceholder(abs))
                         {
-                            result.MissingLocal.Add(f.path);
-                            reporter.Begin(f.path, f.size).Dispose();
+                            result.MissingLocal.Add(c.Path);
+                            reporter.Begin(c.Path, c.Entry != null ? c.Entry.size : 0).Dispose();
                             continue;
                         }
                         long size = info.Length;
                         string hash;
-                        using (var item = reporter.Begin(f.path, size))
-                            hash = await cache.GetHashAsync(f.path, item.Ratio(size), ct).ConfigureAwait(false);
+                        using (var item = reporter.Begin(c.Path, size))
+                            hash = await cache.GetHashAsync(c.Path, item.Ratio(size), ct).ConfigureAwait(false);
 
-                        string baseline = cache.GetBaseline(f.path);
-                        var state = UniLfsThreeWay.Classify(hash, f.hash, baseline);
+                        if (c.Entry == null)
+                        {
+                            // Staged: nobody else has this path yet, so there is
+                            // no entry to roll back and no side to pick. The
+                            // requireBaseline guard has nothing to protect here
+                            // either - it exists to stop Push overwriting
+                            // somebody's manifest line, and this path has none.
+                            current[c.Path] = new CurrentFile { Hash = hash, Size = size };
+                            continue;
+                        }
+
+                        string baseline = cache.GetBaseline(c.Path);
+                        var state = UniLfsThreeWay.Classify(hash, c.Entry.hash, baseline);
+                        // Staged as well as named by the manifest: both sides
+                        // tracked this path independently and there is no
+                        // shared history to attribute the difference to.
+                        if (state != UniLfsFileState.UpToDate && staged.Contains(c.Path))
+                            state = UniLfsFileState.Conflicted;
+                        // A recorded "keep mine" is a decision someone made
+                        // about this exact situation, so it outranks the guards
+                        // below - which exist for the cases where nobody has.
+                        bool keepMine = state == UniLfsFileState.Conflicted && staged.ResolvesLocal(c.Path);
                         // Guarded here rather than in the caller's file list:
                         // Push always walks the whole manifest, so filtering
                         // what made it *fire* would still let it rewrite
                         // everything else it found on the way.
-                        if (requireBaseline && string.IsNullOrEmpty(baseline) && state != UniLfsFileState.UpToDate)
+                        if (!keepMine && requireBaseline && string.IsNullOrEmpty(baseline) && state != UniLfsFileState.UpToDate)
                         {
-                            result.Unattributed.Add(f.path);
+                            result.Unattributed.Add(c.Path);
                             continue;
                         }
                         if (state == UniLfsFileState.Outdated)
@@ -379,18 +518,19 @@ namespace UniLFS.Editor
                             // would drag the manifest back to this older copy
                             // and silently undo their change, so this file is
                             // not Push's to touch - it is Pull's.
-                            result.Outdated.Add(f.path);
+                            result.Outdated.Add(c.Path);
                             continue;
                         }
-                        if (state == UniLfsFileState.Conflicted)
+                        if (state == UniLfsFileState.Conflicted && !keepMine)
                         {
                             // Local content and the manifest moved apart in
                             // different directions. Either version could be the
-                            // one worth keeping, so neither gets picked here.
-                            result.Conflicted.Add(f.path);
+                            // one worth keeping, so neither gets picked here
+                            // until somebody says which - see KeepLocal.
+                            result.Conflicted.Add(c.Path);
                             continue;
                         }
-                        current[f.path] = new CurrentFile { Hash = hash, Size = size };
+                        current[c.Path] = new CurrentFile { Hash = hash, Size = size };
                     }
 
                     var uploadSourceByHash = new Dictionary<string, string>();
@@ -465,22 +605,49 @@ namespace UniLFS.Editor
                 }
                 finally
                 {
-                    // Commit only entries whose blob is confirmed to exist remotely.
-                    foreach (var f in manifest.files)
+                    // Commit only entries whose blob is confirmed to exist
+                    // remotely. This is the only place a manifest entry is ever
+                    // written, which is what makes "the manifest names a blob
+                    // storage has" true by construction rather than by habit.
+                    foreach (var c in candidates)
                     {
                         CurrentFile cur;
-                        if (!current.TryGetValue(f.path, out cur)) continue;
+                        if (!current.TryGetValue(c.Path, out cur)) continue;
                         bool present;
                         lock (presentOnRemote) present = presentOnRemote.Contains(cur.Hash);
                         if (!present) continue;
-                        if (f.hash == cur.Hash && f.size == cur.Size) result.Skipped++;
-                        else { f.hash = cur.Hash; f.size = cur.Size; }
+                        var entry = c.Entry;
+                        if (entry == null)
+                        {
+                            entry = manifest.Upsert(c.Path, cur.Hash, cur.Size);
+                            result.Promoted++;
+                        }
+                        else if (entry.hash == cur.Hash && entry.size == cur.Size) result.Skipped++;
+                        else { entry.hash = cur.Hash; entry.size = cur.Size; }
+                        // Recorded so a clone, which gets the .meta but not the
+                        // gitignored asset, can put the GUID back instead of
+                        // letting Unity mint a new one (see UniLfsMetaGuard).
+                        // Read now rather than at Track time, so a re-import
+                        // that mints a new GUID still reaches everyone; never
+                        // cleared, because a .meta missing at this moment says
+                        // nothing about the one everyone else has.
+                        string guid = UniLfsMetaFile.ReadGuid(UniLfsMetaFile.PathFor(UniLfsPaths.ToAbsolute(c.Path)));
+                        if (guid != null) entry.guid = guid;
                         // The blob is in storage and the manifest now names it,
-                        // so this is the version this machine is in sync with.
-                        cache.RecordSynced(f.path, cur.Hash);
+                        // so this is the version this machine is in sync with,
+                        // and staging has nothing left to say about it.
+                        cache.RecordSynced(c.Path, cur.Hash);
+                        staged.Remove(c.Path);
                     }
+                    // Order matters: the path picks up its committed ignore
+                    // line before it loses its local one. Both ignoring it for
+                    // an instant is harmless; neither ignoring it is the window
+                    // this whole split exists to close.
                     manifest.Save(UniLfsPaths.ManifestPath);
                     UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, manifest.files.Select(f => f.path));
+                    staged.Save(UniLfsPaths.StagedPath);
+                    if (!UniLfsGitExclude.Update(UniLfsPaths.ProjectRoot, staged.paths))
+                        result.NotIgnored.AddRange(staged.paths);
                     cache.Save();
                     // Everything in presentOnRemote was either uploaded just now
                     // or reported as already there, so both are proof.
@@ -508,15 +675,19 @@ namespace UniLFS.Editor
             var settings = UniLfsSettings.Load();
             var user = UniLfsUserSettings.Load();
             var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
             var cache = new UniLfsStateCache(UniLfsPaths.StateCachePath);
             var result = new UniLfsOpResult();
+            // Staged paths are not in the manifest, so there is nothing to
+            // download for them - being invisible to everyone else, this clone
+            // included, is what staged means.
             if (manifest.files.Count == 0) return result;
             var reporter = new UniLfsProgressReporter(progress);
             var remote = UniLfsRemoteBlobCache.Load(settings);
 
             try
             {
-                var statuses = await StatusInternalAsync(manifest, cache, remote, reporter, 0f, PullStatusSpan, ct).ConfigureAwait(false);
+                var statuses = await StatusInternalAsync(manifest, staged, cache, remote, reporter, 0f, PullStatusSpan, ct).ConfigureAwait(false);
                 var targets = statuses.Where(s =>
                     s.State == UniLfsFileState.MissingLocal ||
                     // The manifest moved on and this copy is exactly the one
@@ -576,6 +747,11 @@ namespace UniLFS.Editor
                                     // which is what later runs compare against
                                     // to tell a local edit from a stale copy.
                                     cache.RecordSynced(target.File.path, hash);
+                                    // And if this machine had also staged the
+                                    // path, that intent is spent: the manifest
+                                    // names it, and the content on disk is now
+                                    // the manifest's.
+                                    lock (staged) staged.Remove(target.File.path);
                                     Interlocked.Increment(ref result.Downloaded);
                                 }
                             }
@@ -604,6 +780,8 @@ namespace UniLFS.Editor
             {
                 cache.Save();
                 remote.Save();
+                staged.Save(UniLfsPaths.StagedPath);
+                UniLfsGitExclude.Update(UniLfsPaths.ProjectRoot, staged.paths);
             }
             return result;
         }

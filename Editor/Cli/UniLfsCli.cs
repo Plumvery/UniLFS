@@ -28,8 +28,11 @@ namespace UniLFS.Editor
 
         /// <summary>
         /// Fails (non-zero exit) when the manifest references blobs that do not
-        /// exist in remote storage - i.e. someone committed a manifest without
-        /// pushing. Needs no local asset files, only credentials.
+        /// exist in remote storage. Push is the only thing that writes an entry,
+        /// and only for content storage confirmed, so this is now about what
+        /// that guarantee cannot cover: a hand-edited or badly merged manifest,
+        /// and blobs deleted from the bucket afterwards. Needs no local asset
+        /// files, only credentials.
         /// </summary>
         public static void Verify()
         {
@@ -38,7 +41,9 @@ namespace UniLFS.Editor
             Debug.Log("UniLFS CLI: Verify finished. present=" + result.Skipped + " problems=" + result.Errors.Count);
             foreach (var error in result.Errors) Debug.LogError("UniLFS CLI: " + error);
             if (result.HasErrors)
-                throw new Exception("UniLFS Verify failed: " + result.Errors.Count + " blob(s) missing or unreachable. Did someone forget to Push before committing the manifest?");
+                throw new Exception("UniLFS Verify failed: " + result.Errors.Count + " blob(s) missing or unreachable."
+                    + " The manifest names content storage does not have - most likely a merge or hand-edit that kept an entry"
+                    + " nobody pushed, or a blob deleted from the bucket.");
         }
 
         public static void Status()
@@ -62,6 +67,7 @@ namespace UniLFS.Editor
             if (refreshAssets) AssetDatabase.Refresh();
             Debug.Log("UniLFS CLI: " + label + " finished. uploaded=" + result.Uploaded
                 + " downloaded=" + result.Downloaded
+                + " promoted=" + result.Promoted
                 + " upToDate=" + result.Skipped
                 + " missingLocal=" + result.MissingLocal.Count
                 + " keptModified=" + result.KeptModified.Count

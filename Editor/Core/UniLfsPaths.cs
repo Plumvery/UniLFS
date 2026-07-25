@@ -71,11 +71,26 @@ namespace UniLFS.Editor
 
         public const string ManifestFileName = "unilfs.manifest.json";
 
+        /// <summary>
+        /// Paths this machine has asked to track and has not pushed yet. Sits
+        /// next to the manifest rather than under <c>Library/</c>, which is
+        /// documented as safe to delete: this is the one piece of per-machine
+        /// state that cannot be recomputed from anything.
+        /// </summary>
+        public const string StagedFileName = "unilfs.staged.json";
+
         public static string ManifestPath => Combine(ProjectRoot, ManifestFileName);
+        public static string StagedPath => Combine(ProjectRoot, StagedFileName);
         public static string GitIgnorePath => Combine(ProjectRoot, ".gitignore");
         public static string ProjectSettingsFilePath => Combine(ProjectRoot, "ProjectSettings/UniLFSSettings.json");
         public static string UserSettingsFilePath => Combine(ProjectRoot, "UserSettings/UniLFS.json");
         public const string UserSettingsGitIgnoreLine = "/UserSettings/UniLFS.json";
+        /// <summary>
+        /// Constant, unlike the tracked paths in the same block: the committed
+        /// block has to stay a pure function of the committed manifest, or two
+        /// machines with different staging produce different .gitignore files.
+        /// </summary>
+        public const string StagedGitIgnoreLine = "/" + StagedFileName;
         public static string LibraryDir => Combine(ProjectRoot, "Library/UniLFS");
         public static string StateCachePath => Combine(LibraryDir, "statecache.json");
         public static string TempDownloadDir => Combine(LibraryDir, "tmp");
@@ -137,6 +152,11 @@ namespace UniLFS.Editor
             if (string.Equals(projectRelative, ManifestFileName, StringComparison.OrdinalIgnoreCase))
             {
                 reason = "the UniLFS manifest itself cannot be tracked";
+                return false;
+            }
+            if (string.Equals(projectRelative, StagedFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "the UniLFS staging file itself cannot be tracked";
                 return false;
             }
             foreach (var top in ForbiddenTopLevel)

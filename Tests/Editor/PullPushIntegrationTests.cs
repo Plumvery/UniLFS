@@ -142,9 +142,9 @@ namespace UniLFS.Editor.Tests
 
         /// <summary>
         /// Blobs are addressed by content hash, so the second clone tracking
-        /// byte-identical content costs an existence check and no transfer. This
-        /// is also the check that proves Push asks storage rather than trusting
-        /// its own per-machine record, which a fresh clone does not have.
+        /// byte-identical content costs no transfer. This clone pulled that very
+        /// blob earlier, which recorded the proof that storage has it — so the
+        /// push does not even ask, let alone upload.
         /// </summary>
         [Test]
         public void ContentTheOtherCloneAlreadyPushedIsNotUploadedAgain()
@@ -159,7 +159,8 @@ namespace UniLFS.Editor.Tests
 
             Assert.AreEqual(0, pushed.Uploaded, "the blob was already in storage");
             Assert.AreEqual(0, _server.Puts);
-            Assert.Greater(_server.Heads, 0, "Push has to ask storage before it can skip the upload");
+            Assert.AreEqual(0, _server.Heads,
+                "this clone pulled the blob itself, and that proof spares the existence check");
             Assert.AreEqual(ManifestHash(_b, Asset), ManifestHash(_b, SecondAsset));
             CollectionAssert.AreEqual(new[] { ManifestHash(_b, Asset) }, _server.StoredHashes,
                 "one blob, two paths");
@@ -171,6 +172,91 @@ namespace UniLFS.Editor.Tests
             AssertNoErrors(pulled);
             Assert.AreEqual(1, pulled.Downloaded);
             Assert.AreEqual("shared content", ReadAsset(_a, SecondAsset));
+        }
+
+        /// <summary>
+        /// A clone with no record of a blob cannot take its presence on faith:
+        /// this clone never pushed or pulled the content, so its push has to ask
+        /// storage — and the answer spares the upload, not the question.
+        /// </summary>
+        [Test]
+        public void CloneWithoutProofStillAsksStorageBeforeSkippingTheUpload()
+        {
+            WriteAsset(_a, Asset, "shared content");
+            AssertNoErrors(Track(_a, Asset));
+            AssertNoErrors(Push(_a));
+            Commit(_a, _b);
+            _server.ResetCounters();
+
+            // B tracks byte-identical content under its own path without ever
+            // pulling, so nothing has recorded proof on B's side.
+            WriteAsset(_b, SecondAsset, "shared content");
+            AssertNoErrors(Track(_b, SecondAsset));
+            var pushed = Push(_b);
+            AssertNoErrors(pushed);
+
+            Assert.Greater(_server.Heads, 0, "no local proof, so Push has to ask storage");
+            Assert.AreEqual(0, _server.Puts, "storage answered it has the blob, so nothing is re-sent");
+            Assert.AreEqual(0, pushed.Uploaded);
+            Assert.AreEqual(1, pushed.Promoted);
+        }
+
+        /// <summary>
+        /// The point of trusting recorded proof: a push with nothing to do
+        /// touches storage not at all. Before this, every push asked about
+        /// every tracked blob, so a no-change push cost one round trip per file
+        /// — the slow part of pushing a project where nothing moved.
+        /// </summary>
+        [Test]
+        public void PushWithNothingChangedMakesNoRemoteRequests()
+        {
+            SyncBothClones("version one");
+            _server.ResetCounters();
+
+            var pushed = Push(_a);
+            AssertNoErrors(pushed);
+            Assert.AreEqual(1, pushed.Skipped);
+            Assert.AreEqual(0, pushed.Uploaded);
+            Assert.AreEqual(0, _server.Heads, "the blob's presence is already proven by this clone's own push");
+            Assert.AreEqual(0, _server.Puts);
+            Assert.AreEqual(0, _server.Gets);
+
+            var pulled = Pull(_a);
+            AssertNoErrors(pulled);
+            Assert.AreEqual(1, pulled.Skipped);
+            Assert.AreEqual(0, _server.Heads, "a pull with nothing to download needs no requests either");
+            Assert.AreEqual(0, _server.Gets);
+        }
+
+        /// <summary>
+        /// The stale-proof case trusting the record opens up, and the way back
+        /// out. A blob deleted from the bucket hides behind the recorded
+        /// confirmation, so a push alone no longer notices — Verify is what
+        /// retracts the record, and the next push then asks, hears "no", and
+        /// re-uploads.
+        /// </summary>
+        [Test]
+        public void VerifyRetractsStaleProofSoPushUploadsAgain()
+        {
+            SyncBothClones("version one");
+            string hash = ManifestHash(_a, Asset);
+            _server.Delete(Prefix, hash);
+            _server.ResetCounters();
+
+            // The record still vouches for the blob, so this push skips it.
+            var trusting = Push(_a);
+            AssertNoErrors(trusting);
+            Assert.AreEqual(0, _server.Puts);
+            Assert.IsFalse(_server.Has(Prefix, hash), "nothing noticed the hole yet");
+
+            // Verify asks for real and retracts the confirmation ...
+            Assert.IsTrue(Verify(_a).HasErrors, "Verify must report the blob storage lost");
+
+            // ... which is what lets the next push heal the bucket.
+            var healing = Push(_a);
+            AssertNoErrors(healing);
+            Assert.AreEqual(1, healing.Uploaded);
+            Assert.IsTrue(_server.Has(Prefix, hash), "the re-upload puts the blob back");
         }
 
         /// <summary>

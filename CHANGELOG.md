@@ -5,6 +5,13 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-04
+
+### Changed
+
+- **Push no longer asks storage about blobs this machine already confirmed.** Every Push used to make one existence request per tracked blob — changed or not — so pushing a project where nothing moved cost a network round trip per file (and on Google Drive, a token refresh in front of them). Push now trusts the per-machine confirmation record (`Library/remote-*.json`), which is written on every successful upload, download and check, and asks only about blobs it has no proof for. A no-change Push and Pull now make no storage requests at all.
+- The trade-off is deliberate and narrow: a blob deleted from the bucket *after* this machine confirmed it hides behind the stale record, where the old Push would have noticed by accident. That was always **Verify**'s job — Refresh in the window, `UniLfsCli.Verify` in CI — which asks storage for real, retracts confirmations it denies, and thereby makes the next Push re-upload. Deleting `Library/remote-*.json` also drops every confirmation, after which Push checks everything once and re-earns them.
+
 ## [0.4.0] - 2026-07-25
 
 ### Changed

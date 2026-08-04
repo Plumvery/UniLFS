@@ -539,8 +539,22 @@ namespace UniLFS.Editor
 
                     var semaphore = new SemaphoreSlim(Math.Max(1, settings.parallelTransfers));
 
-                    reporter.BeginPhase("Checking remote", PushHashSpan, PushCheckSpan, hashes.Count, 0);
-                    var checkTasks = hashes.Select(async h =>
+                    // A confirmation this machine already recorded is proof the
+                    // blob reached storage (see UniLfsRemoteBlobCache), so only
+                    // unconfirmed hashes are asked about. Asking for all of them
+                    // made every Push cost one round trip per tracked blob, no
+                    // matter how little had changed. A blob deleted from the
+                    // bucket behind a stale confirmation is Verify's case, which
+                    // retracts it - after which Push checks and re-uploads.
+                    var toCheck = new List<string>();
+                    foreach (var h in hashes)
+                    {
+                        if (remote.Contains(h)) presentOnRemote.Add(h);
+                        else toCheck.Add(h);
+                    }
+
+                    reporter.BeginPhase("Checking remote", PushHashSpan, PushCheckSpan, toCheck.Count, 0);
+                    var checkTasks = toCheck.Select(async h =>
                     {
                         await semaphore.WaitAsync(ct).ConfigureAwait(false);
                         using (reporter.Begin(uploadSourceByHash[h], 0))

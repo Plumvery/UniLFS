@@ -7,9 +7,14 @@ Builds need the real files on disk, so run a UniLFS **Pull** after checkout and 
 ```
 UniLFS.Editor.UniLfsCli.Pull     downloads everything missing; fails the process on any error
 UniLFS.Editor.UniLfsCli.Push     uploads local changes (rarely needed in CI - see below)
+UniLFS.Editor.UniLfsCli.Track    stages every file matching unilfs.track that is not tracked yet
 UniLFS.Editor.UniLfsCli.Verify   fails when the manifest references blobs missing from storage
 UniLFS.Editor.UniLfsCli.Status   logs the state of every tracked file
 ```
+
+`Track` uploads nothing - it only stages, exactly as the editor's Track does, so
+a batch job that wants files in storage runs `Track` and then `Push`, on a
+machine that actually has the bytes.
 
 > **Why CI cannot upload for you:** tracked files are gitignored, so a CI
 > checkout only contains the manifest - the actual bytes exist solely on the

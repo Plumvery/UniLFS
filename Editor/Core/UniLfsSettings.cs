@@ -57,6 +57,15 @@ namespace UniLFS.Editor
         public string autoPull = AutoPullAsk;
         public string autoPush = AutoPushAsk;
 
+        /// <summary>
+        /// Stage newly imported files that <c>unilfs.track</c> matches. On by
+        /// default and harmless until the project has a pattern file: writing
+        /// the patterns is the opt-in. Staging is local and reversible
+        /// (Untrack), and nothing leaves the machine until Push, which keeps
+        /// its own Ask/Auto decision.
+        /// </summary>
+        public bool autoTrack = true;
+
         public string s3Endpoint = "";
         public string s3Bucket = "";
         public string s3Region = "auto";

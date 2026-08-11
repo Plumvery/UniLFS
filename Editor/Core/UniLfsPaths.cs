@@ -79,8 +79,18 @@ namespace UniLFS.Editor
         /// </summary>
         public const string StagedFileName = "unilfs.staged.json";
 
+        /// <summary>
+        /// The patterns saying which files this project stores externally (see
+        /// <see cref="UniLfsTrackPatterns"/>). Committed, like the manifest:
+        /// "*.psd lives in storage" is a decision about the project, not about
+        /// one machine. Plain text next to the two JSON files, because the
+        /// point of it is that a person edits it.
+        /// </summary>
+        public const string TrackFileName = "unilfs.track";
+
         public static string ManifestPath => Combine(ProjectRoot, ManifestFileName);
         public static string StagedPath => Combine(ProjectRoot, StagedFileName);
+        public static string TrackPath => Combine(ProjectRoot, TrackFileName);
         public static string GitIgnorePath => Combine(ProjectRoot, ".gitignore");
         public static string ProjectSettingsFilePath => Combine(ProjectRoot, "ProjectSettings/UniLFSSettings.json");
         public static string UserSettingsFilePath => Combine(ProjectRoot, "UserSettings/UniLFS.json");
@@ -157,6 +167,11 @@ namespace UniLFS.Editor
             if (string.Equals(projectRelative, StagedFileName, StringComparison.OrdinalIgnoreCase))
             {
                 reason = "the UniLFS staging file itself cannot be tracked";
+                return false;
+            }
+            if (string.Equals(projectRelative, TrackFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "the UniLFS pattern file itself cannot be tracked";
                 return false;
             }
             foreach (var top in ForbiddenTopLevel)

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -20,6 +21,9 @@ namespace UniLFS.Editor
         bool _working;
         string _newFolderName = "UniLFS";
 
+        UniLfsTrackPatterns _patterns;
+        string _patternsStamp;
+
         // Text fields write straight into the in-memory settings objects, but
         // persisting is deferred until the field loses focus. Saving per
         // keystroke rewrote the settings JSON — and, for user settings, the
@@ -36,13 +40,14 @@ namespace UniLFS.Editor
         public static SettingsProvider Create()
         {
             return new UniLfsSettingsProvider("Project/UniLFS", SettingsScope.Project,
-                new[] { "UniLFS", "LFS", "R2", "S3", "MinIO", "Google", "Drive", "storage", "large", "assets" });
+                new[] { "UniLFS", "LFS", "R2", "S3", "MinIO", "Google", "Drive", "storage", "large", "assets", "track", "patterns" });
         }
 
         public override void OnActivate(string searchContext, VisualElement rootElement)
         {
             _settings = UniLfsSettings.Load();
             _user = UniLfsUserSettings.Load();
+            _patterns = null;
             _statusMessage = "";
             _statusType = MessageType.Info;
         }
@@ -85,6 +90,9 @@ namespace UniLFS.Editor
 
                 EditorGUILayout.Space(12);
                 DrawConnectionTest();
+
+                EditorGUILayout.Space(12);
+                DrawTrackedPatterns();
             }
             finally
             {
@@ -219,6 +227,59 @@ namespace UniLFS.Editor
                 EditorGUILayout.Space(4);
                 EditorGUILayout.HelpBox(_statusMessage, _statusType);
             }
+        }
+
+        /// <summary>
+        /// The committed pattern file and the one setting that acts on it.
+        /// Everything else about it is edited in a text editor, so this shows
+        /// what UniLFS made of the file rather than trying to reproduce it:
+        /// how many patterns are in effect, and which lines it could not read.
+        /// </summary>
+        void DrawTrackedPatterns()
+        {
+            RefreshPatternsIfChanged();
+            EditorGUILayout.LabelField("Tracked patterns", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                UniLfsPaths.TrackFileName + " is a committed text file saying which files this project stores externally, "
+                + "one gitignore-style pattern per line (\"*.psd\", \"Assets/Movies/\", \"!Assets/UI/*.psd\").\n"
+                + "Window > UniLFS > Track Matching tracks everything it matches. It has no file extension, so Windows may "
+                + "ask once which app should open it.",
+                MessageType.Info);
+
+            bool exists = File.Exists(UniLfsPaths.TrackPath);
+            EditorGUILayout.LabelField("Patterns",
+                exists ? _patterns.Count + " in effect" : "no " + UniLfsPaths.TrackFileName + " in this project yet");
+            if (_patterns.Errors.Count > 0)
+                EditorGUILayout.HelpBox("Lines UniLFS could not read (they match nothing):\n- "
+                    + string.Join("\n- ", _patterns.Errors.ToArray()), MessageType.Warning);
+
+            EditorGUI.BeginChangeCheck();
+            _settings.autoTrack = EditorGUILayout.Toggle(
+                new GUIContent("Auto Track", "Track newly imported files that match " + UniLfsPaths.TrackFileName
+                    + ", without waiting for Track Matching. They are staged locally; Push still decides when anything is uploaded."),
+                _settings.autoTrack);
+            if (EditorGUI.EndChangeCheck()) _settings.Save();
+
+            using (FieldColumn.Open())
+            {
+                if (GUILayout.Button(exists ? "Edit " + UniLfsPaths.TrackFileName : "Create " + UniLfsPaths.TrackFileName, GUILayout.Width(180)))
+                    UniLfsAssetMenu.OpenTrackFile();
+            }
+        }
+
+        /// <summary>
+        /// Re-reads the pattern file only when it changed on disk: this runs
+        /// from OnGUI, and the file is edited outside Unity, so neither
+        /// re-parsing it every repaint nor reading it once per activation is
+        /// right.
+        /// </summary>
+        void RefreshPatternsIfChanged()
+        {
+            var info = new FileInfo(UniLfsPaths.TrackPath);
+            string stamp = info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "";
+            if (_patterns != null && _patternsStamp == stamp) return;
+            _patternsStamp = stamp;
+            _patterns = UniLfsTrackPatterns.Load(UniLfsPaths.TrackPath);
         }
 
         /// <summary>Lists what still has to be filled in before Push/Pull can work.</summary>

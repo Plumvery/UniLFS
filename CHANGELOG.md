@@ -5,6 +5,17 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-11
+
+### Added
+
+- **`unilfs.track`: the project states once which files belong in storage.** Until now that answer only existed in whoever remembered to right-click a file, so a new `.psd` reached git whenever nobody did — and a new team member had no way to find out what the rule even was. `unilfs.track` is a committed plain-text file of gitignore-style patterns (`*.psd`, `Assets/Movies/`, `!Assets/UI/*.psd`, `# comments`), edited in a text editor like the `.gitattributes` git-lfs uses, except nothing generates it. Committing it is what turns the rule into the project's rather than one machine's.
+- **Track Matching** (`Window > UniLFS`) sweeps the whole project and tracks every match nothing tracks yet — what to press after writing the file, or after a `git pull` brings a teammate's new pattern. Files already in the manifest or in staging are counted and skipped rather than re-examined, so a sweep over a settled project reads no file content at all.
+- **Auto Track** (`Edit > Project Settings > UniLFS`, on by default) tracks matching files as they are imported or moved, which is the point of writing the patterns down: the file is out of git from the moment it lands. It does nothing at all until the project has a `unilfs.track`, so existing projects are unaffected until they opt in.
+- Both routes end in the same Track as the menu item, so nothing about tracking changed: files are staged on this machine and hidden from git, and **Push** remains the only thing that uploads content and writes a manifest entry. Patterns decide which paths are handed to Track and nothing else.
+- Matching ignores case, and the last matching line wins so a later line can re-include what an earlier one excluded. Whatever a line says, `.meta` files, UniLFS's own files and everything under `Library/`, `Temp/`, `Logs/`, `obj/`, `UserSettings/` and `.git/` never match — the pattern file cannot express a path Track itself would refuse. Lines it cannot read (`..` segments, say) are reported in Project Settings and by the sweep rather than silently matching nothing.
+- `UniLfsCli.Track` for batch mode, so CI and scripts can track without a hand-written `-executeMethod` shim: `Unity -batchmode -nographics -quit -executeMethod UniLFS.Editor.UniLfsCli.Track`, then `...UniLfsCli.Push`.
+
 ## [0.4.1] - 2026-08-04
 
 ### Changed

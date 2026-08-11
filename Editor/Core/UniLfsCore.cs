@@ -310,6 +310,111 @@ namespace UniLFS.Editor
             return result;
         }
 
+        /// <summary>
+        /// Stages every file in the project that <c>unilfs.track</c> matches and
+        /// nothing tracks yet. Same staging as <see cref="TrackAsync"/> — the
+        /// patterns only decide which paths it is handed, so a file arrives at
+        /// its first Push by exactly one route however it was picked.
+        /// </summary>
+        public static async Task<UniLfsOpResult> TrackMatchingAsync(IProgress<UniLfsProgress> progress = null, CancellationToken ct = default(CancellationToken))
+        {
+            using (UniLfsOperationLock.Acquire("Track"))
+            {
+                var patterns = UniLfsTrackPatterns.Load(UniLfsPaths.TrackPath);
+                int alreadyTracked;
+                var matches = FindPatternMatches(patterns, out alreadyTracked);
+                var result = await TrackUnlockedAsync(matches, progress, ct).ConfigureAwait(false);
+                // Counted as skipped rather than dropped: "37 already tracked"
+                // is what tells you the patterns are working on a project where
+                // the sweep has nothing left to do.
+                result.Skipped += alreadyTracked;
+                foreach (var error in patterns.Errors)
+                    result.Errors.Add(UniLfsPaths.TrackFileName + ", " + error);
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// The project's files that the patterns want and nothing tracks yet.
+        ///
+        /// Files already in the manifest or in staging are counted and left
+        /// out, rather than passed through: Track's already-tracked branch
+        /// hashes every path it is given to report its state, which would make
+        /// a sweep over a settled project read every tracked byte to conclude
+        /// there was nothing to do.
+        /// </summary>
+        internal static List<string> FindPatternMatches(UniLfsTrackPatterns patterns, out int alreadyTracked)
+        {
+            alreadyTracked = 0;
+            var matches = new List<string>();
+            if (patterns == null || patterns.IsEmpty) return matches;
+
+            var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
+            var tracked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in manifest.files) tracked.Add(file.path);
+            foreach (var path in staged.paths) tracked.Add(path);
+
+            foreach (var rel in EnumerateProjectFiles())
+            {
+                if (!patterns.Matches(rel)) continue;
+                if (tracked.Contains(rel)) alreadyTracked++;
+                else matches.Add(rel);
+            }
+            matches.Sort(StringComparer.Ordinal);
+            return matches;
+        }
+
+        /// <summary>
+        /// Walks the project a directory at a time so the ones that can never
+        /// hold a tracked file are never entered. Library/ alone is tens of
+        /// thousands of files on a real project, and asking the filesystem for
+        /// every path under the root just to discard them is the difference
+        /// between a sweep that feels instant and one that does not.
+        ///
+        /// Hidden directories go with them: .git is already forbidden, and
+        /// nothing in .vscode or .idea is an asset — the same rule the Track
+        /// menu applies to a selection.
+        /// </summary>
+        static IEnumerable<string> EnumerateProjectFiles()
+        {
+            var pending = new Stack<string>();
+            pending.Push(UniLfsPaths.ProjectRoot);
+            while (pending.Count > 0)
+            {
+                string dir = pending.Pop();
+                string[] files;
+                string[] subdirectories;
+                try
+                {
+                    files = Directory.GetFiles(dir);
+                    subdirectories = Directory.GetDirectories(dir);
+                }
+                catch (Exception)
+                {
+                    // Unreadable directory (permissions, a path in the middle of
+                    // being deleted). Nothing here is worth failing a sweep for.
+                    continue;
+                }
+                foreach (var file in files)
+                {
+                    if (Path.GetFileName(file).StartsWith(".", StringComparison.Ordinal)) continue;
+                    string rel = UniLfsPaths.ToProjectRelative(file);
+                    if (rel != null) yield return rel;
+                }
+                foreach (var subdirectory in subdirectories)
+                {
+                    string name = Path.GetFileName(subdirectory);
+                    if (name.StartsWith(".", StringComparison.Ordinal)) continue;
+                    string rel = UniLfsPaths.ToProjectRelative(subdirectory);
+                    if (rel == null) continue;
+                    string reason;
+                    if (!UniLfsPaths.IsTrackablePath(rel, out reason)) continue;
+                    pending.Push(subdirectory);
+                }
+            }
+        }
+
         /// <summary>Removes files from the manifest and from staging. Files stay on disk.</summary>
         public static UniLfsOpResult Untrack(IEnumerable<string> paths)
         {

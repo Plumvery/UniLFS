@@ -27,6 +27,26 @@ namespace UniLFS.Editor
         }
 
         /// <summary>
+        /// Stages every file matching <c>unilfs.track</c> that is not tracked
+        /// yet. Uploads nothing — follow it with Push, in that order, exactly
+        /// as the editor buttons do. Reported on its own rather than through
+        /// <see cref="Run"/>, whose counters are about transfers.
+        /// </summary>
+        public static void Track()
+        {
+            Debug.Log("UniLFS CLI: Track starting...");
+            var result = UniLfsCore.TrackMatchingAsync(new ConsoleProgress(), CancellationToken.None).GetAwaiter().GetResult();
+            Debug.Log("UniLFS CLI: Track finished. staged=" + result.TrackedNew
+                + " alreadyTracked=" + result.Skipped
+                + " errors=" + result.Errors.Count);
+            foreach (var path in result.NewlyTracked) Debug.Log("UniLFS CLI: staged " + path);
+            foreach (var path in result.NotIgnored) Debug.LogWarning("UniLFS CLI: staged but not hidden from git: " + path);
+            foreach (var error in result.Errors) Debug.LogError("UniLFS CLI: " + error);
+            if (result.HasErrors)
+                throw new Exception("UniLFS Track finished with " + result.Errors.Count + " error(s); see the log above.");
+        }
+
+        /// <summary>
         /// Fails (non-zero exit) when the manifest references blobs that do not
         /// exist in remote storage. Push is the only thing that writes an entry,
         /// and only for content storage confirmed, so this is now about what

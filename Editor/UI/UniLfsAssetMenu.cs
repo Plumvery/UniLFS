@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -59,36 +60,60 @@ namespace UniLFS.Editor
                 "Track", "Cancel"))
                 return;
 
+            await RunTrackAsync(progress => UniLfsCore.TrackAsync(files, progress, CancellationToken.None), onDone);
+        }
+
+        /// <summary>
+        /// Stages everything <c>unilfs.track</c> matches and nothing tracks yet
+        /// — the whole project at once, rather than whatever happens to be
+        /// selected. Offers to create the pattern file when the project has
+        /// none, because "nothing matched" and "there are no patterns" are the
+        /// same silence otherwise.
+        /// </summary>
+        public static async void TrackMatching(Action onDone)
+        {
+            if (!File.Exists(UniLfsPaths.TrackPath))
+            {
+                if (EditorUtility.DisplayDialog("UniLFS - Track Matching",
+                    "This project has no " + UniLfsPaths.TrackFileName + " yet.\n\n"
+                    + "It is a committed text file listing which files UniLFS stores externally, one pattern per line "
+                    + "(e.g. \"*.psd\"). Create it and open it in your text editor?",
+                    "Create and Open", "Cancel"))
+                    OpenTrackFile();
+                if (onDone != null) onDone();
+                return;
+            }
+            if (!EditorUtility.DisplayDialog("UniLFS - Track Matching",
+                "Track every file matching " + UniLfsPaths.TrackFileName + " that is not tracked yet?\n\n"
+                + "They will be staged on this machine and hidden from git. Push uploads them and records them in "
+                + "unilfs.manifest.json, which is what the rest of the team sees. Their .meta files stay in git.",
+                "Track", "Cancel"))
+                return;
+
+            await RunTrackAsync(progress => UniLfsCore.TrackMatchingAsync(progress, CancellationToken.None), onDone);
+        }
+
+        /// <summary>
+        /// Opens <c>unilfs.track</c> in whatever the OS uses for text, creating
+        /// it from the commented template first if it is not there.
+        /// </summary>
+        public static void OpenTrackFile()
+        {
+            string path = UniLfsPaths.TrackPath;
+            if (UniLfsTrackPatterns.CreateIfMissing(path))
+                Debug.Log("UniLFS: created " + path + ". Commit it - it is how the team agrees on what lives in external storage.");
+            EditorUtility.OpenWithDefaultApp(path);
+        }
+
+        static async Task RunTrackAsync(Func<IProgress<UniLfsProgress>, Task<UniLfsOpResult>> operation, Action onDone)
+        {
             int progressId = Progress.Start("UniLFS Track");
             try
             {
-                var result = await UniLfsCore.TrackAsync(files, new Progress<UniLfsProgress>(p =>
-                    Progress.Report(progressId, p.Fraction, p.Label)), CancellationToken.None);
+                var result = await operation(new Progress<UniLfsProgress>(p =>
+                    Progress.Report(progressId, p.Fraction, p.Label)));
                 Progress.Finish(progressId, result.HasErrors ? Progress.Status.Failed : Progress.Status.Succeeded);
-
-                string message = "UniLFS: staged " + result.TrackedNew + " new file(s), " + result.Skipped
-                    + " already tracked. Press Push in Window > UniLFS to upload them and record them in the manifest.";
-                if (result.Outdated.Count > 0)
-                    Debug.LogWarning("UniLFS: " + result.Outdated.Count + " file(s) are already tracked and the manifest has a newer version "
-                        + "than the copy here, so there was nothing to track. Run Pull to get it:\n- "
-                        + string.Join("\n- ", result.Outdated.ToArray()));
-                if (result.Conflicted.Count > 0)
-                    Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) are already tracked and their local content and the manifest "
-                        + "disagree with no shared history to go on, so neither version wins automatically:\n- "
-                        + string.Join("\n- ", result.Conflicted.ToArray())
-                        + "\nKeep this machine's copy with Window > UniLFS > Keep Mine followed by Push, "
-                        + "or take the manifest's with Restore Modified.");
-                if (result.NotIgnored.Count > 0)
-                    Debug.LogWarning("UniLFS: " + result.NotIgnored.Count + " staged file(s) could not be hidden from git - this project is not in a "
-                        + "git checkout UniLFS could write .git/info/exclude in. Until they are pushed, 'git add -A' would commit them:\n- "
-                        + string.Join("\n- ", result.NotIgnored.ToArray()));
-                if (result.HasErrors)
-                    Debug.LogWarning(message + "\nErrors:\n- " + string.Join("\n- ", result.Errors));
-                else
-                    Debug.Log(message);
-
-                string hint = UniLfsCore.GitRemoveHint(result.NewlyTracked);
-                if (hint != null) Debug.Log("UniLFS: " + hint);
+                ReportTrackResult(result);
             }
             catch (UniLfsBusyException e)
             {
@@ -104,6 +129,37 @@ namespace UniLFS.Editor
             {
                 if (onDone != null) onDone();
             }
+        }
+
+        /// <summary>
+        /// One report for both ways of tracking: which files were staged, and
+        /// every state a person still has to do something about.
+        /// </summary>
+        static void ReportTrackResult(UniLfsOpResult result)
+        {
+            string message = "UniLFS: staged " + result.TrackedNew + " new file(s), " + result.Skipped
+                + " already tracked. Press Push in Window > UniLFS to upload them and record them in the manifest.";
+            if (result.Outdated.Count > 0)
+                Debug.LogWarning("UniLFS: " + result.Outdated.Count + " file(s) are already tracked and the manifest has a newer version "
+                    + "than the copy here, so there was nothing to track. Run Pull to get it:\n- "
+                    + string.Join("\n- ", result.Outdated.ToArray()));
+            if (result.Conflicted.Count > 0)
+                Debug.LogWarning("UniLFS: " + result.Conflicted.Count + " file(s) are already tracked and their local content and the manifest "
+                    + "disagree with no shared history to go on, so neither version wins automatically:\n- "
+                    + string.Join("\n- ", result.Conflicted.ToArray())
+                    + "\nKeep this machine's copy with Window > UniLFS > Keep Mine followed by Push, "
+                    + "or take the manifest's with Restore Modified.");
+            if (result.NotIgnored.Count > 0)
+                Debug.LogWarning("UniLFS: " + result.NotIgnored.Count + " staged file(s) could not be hidden from git - this project is not in a "
+                    + "git checkout UniLFS could write .git/info/exclude in. Until they are pushed, 'git add -A' would commit them:\n- "
+                    + string.Join("\n- ", result.NotIgnored.ToArray()));
+            if (result.HasErrors)
+                Debug.LogWarning(message + "\nErrors:\n- " + string.Join("\n- ", result.Errors));
+            else
+                Debug.Log(message);
+
+            string hint = UniLfsCore.GitRemoveHint(result.NewlyTracked);
+            if (hint != null) Debug.Log("UniLFS: " + hint);
         }
 
         public static void UntrackSelection(Action onDone)

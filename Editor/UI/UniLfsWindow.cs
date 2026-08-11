@@ -109,6 +109,9 @@ namespace UniLFS.Editor
                 // what storage holds.
                 if (GUILayout.Button("Track Selected", EditorStyles.toolbarButton, GUILayout.Width(95)))
                     UniLfsAssetMenu.TrackSelection(() => RefreshStatus());
+                if (GUILayout.Button(new GUIContent("Track Matching", "Track every file in the project matching " + UniLfsPaths.TrackFileName + " that is not tracked yet"),
+                    EditorStyles.toolbarButton, GUILayout.Width(100)))
+                    UniLfsAssetMenu.TrackMatching(() => RefreshStatus());
                 if (GUILayout.Button("Untrack Selected", EditorStyles.toolbarButton, GUILayout.Width(105)))
                     UniLfsAssetMenu.UntrackSelection(() => RefreshStatus());
             }

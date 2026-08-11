@@ -23,6 +23,10 @@ namespace UniLFS.Editor
     /// or uploads in the background depending on the Auto Push setting, so
     /// blobs are already in storage by the time the manifest gets committed.
     ///
+    /// Track side: an imported file matching the project's unilfs.track
+    /// patterns is staged straight away, so nothing large reaches git while
+    /// waiting to be noticed (Auto Track setting).
+    ///
     /// Each detected state is handled at most once per editor session
     /// (SessionState survives domain reloads).
     /// </summary>
@@ -53,9 +57,76 @@ namespace UniLFS.Editor
             await CheckPushAsync(focused, false);
         }
 
-        internal static async void OnTrackedAssetsImported()
+        internal static async void OnAssetsImported(List<string> importedPaths)
         {
+            // Tracking first: a file the patterns claim should be staged before
+            // the push check runs, or it waits for the next import to be
+            // noticed as something to upload.
+            await TrackMatchingImportsAsync(importedPaths);
             await CheckPushAsync(true, true);
+        }
+
+        // ---------- Track ----------
+
+        /// <summary>
+        /// Stages imported files that <c>unilfs.track</c> matches, so a new
+        /// asset is out of git from the moment it lands rather than from
+        /// whenever someone remembers to track it — which is the whole point of
+        /// writing the patterns down.
+        ///
+        /// Only the paths Unity just handed us are considered; the sweep over
+        /// the whole project is Track Matching's job.
+        /// </summary>
+        static async Task TrackMatchingImportsAsync(List<string> importedPaths)
+        {
+            if (importedPaths == null || importedPaths.Count == 0) return;
+            if (!UniLfsSettings.Load().autoTrack) return;
+            if (!File.Exists(UniLfsPaths.TrackPath)) return;
+
+            var patterns = UniLfsTrackPatterns.Load(UniLfsPaths.TrackPath);
+            if (patterns.IsEmpty) return;
+
+            var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
+            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
+            var matched = new List<string>();
+            foreach (var imported in importedPaths)
+            {
+                string rel = UniLfsPaths.Normalize(imported);
+                if (!patterns.Matches(rel)) continue;
+                if (staged.Contains(rel) || manifest.Find(rel) != null) continue;
+                // Imports include folders, and a Pull's refresh re-imports files
+                // that were just downloaded - the manifest check above covers
+                // those, this covers everything that is not a file at all.
+                if (!File.Exists(UniLfsPaths.ToAbsolute(rel))) continue;
+                matched.Add(rel);
+            }
+            if (matched.Count == 0) return;
+
+            try
+            {
+                var result = await UniLfsCore.TrackAsync(matched, null, CancellationToken.None);
+                if (result.TrackedNew > 0)
+                    Debug.Log("UniLFS auto track: staged " + result.TrackedNew + " newly imported file(s) matching "
+                        + UniLfsPaths.TrackFileName + ". Push uploads them and records them in the manifest.");
+                if (result.NotIgnored.Count > 0)
+                    Debug.LogWarning("UniLFS: " + result.NotIgnored.Count + " staged file(s) could not be hidden from git - this project is not in a "
+                        + "git checkout UniLFS could write .git/info/exclude in. Until they are pushed, 'git add -A' would commit them:\n- "
+                        + string.Join("\n- ", result.NotIgnored.ToArray()));
+                if (result.HasErrors)
+                    Debug.LogWarning("UniLFS auto track: " + result.Errors.Count + " error(s):\n- " + string.Join("\n- ", result.Errors));
+            }
+            catch (UniLfsBusyException)
+            {
+                // A Push or Pull the user started holds the lock. Say so rather
+                // than retrying blindly: the import is not coming round again,
+                // and the sweep picks these up whenever it is next run.
+                Debug.LogWarning("UniLFS: " + matched.Count + " newly imported file(s) match " + UniLfsPaths.TrackFileName
+                    + " but another UniLFS operation was running. Use Window > UniLFS > Track Matching when it finishes.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("UniLFS auto track failed: " + e.Message);
+            }
         }
 
         // ---------- Pull ----------
@@ -309,9 +380,12 @@ namespace UniLFS.Editor
     }
 
     /// <summary>
-    /// In Auto Push mode, re-imports of tracked files (i.e. the user just
-    /// saved/changed a big asset) trigger a push check without waiting for a
-    /// focus change.
+    /// Imports are where both automatic decisions about a new file start: an
+    /// asset matching <c>unilfs.track</c> gets staged (Auto Track), and in Auto
+    /// Push mode a re-import of a tracked file (i.e. the user just
+    /// saved/changed a big asset) triggers a push check without waiting for a
+    /// focus change. One postprocessor for both, so they cannot race each other
+    /// for the operation lock.
     /// </summary>
     class UniLfsAssetImportWatcher : AssetPostprocessor
     {
@@ -320,12 +394,18 @@ namespace UniLFS.Editor
         static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
         {
             if (Application.isBatchMode || _scheduled) return;
-            if (importedAssets == null || importedAssets.Length == 0) return;
+            // Moved assets count as much as imported ones: dragging a file into
+            // a folder the patterns cover is the same decision as creating it
+            // there, and Unity reports it here and nowhere else.
+            var touched = new List<string>();
+            if (importedAssets != null) touched.AddRange(importedAssets);
+            if (movedAssets != null) touched.AddRange(movedAssets);
+            if (touched.Count == 0) return;
             _scheduled = true;
             EditorApplication.delayCall += () =>
             {
                 _scheduled = false;
-                UniLfsAutoSync.OnTrackedAssetsImported();
+                UniLfsAutoSync.OnAssetsImported(touched);
             };
         }
     }

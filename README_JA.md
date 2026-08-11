@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da638)](LICENSE.md)
 [![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-222c37?logo=unity&logoColor=white)](#-インストール)
 
-[**English**](README.md) · [インストール](#-インストール) · [クイックスタート](#-クイックスタートcloudflare-r2) · [自動同期](#-自動同期--gitフック不要) · [CI](Documentation~/ci.md)
+[**English**](README.md) · [インストール](#-インストール) · [クイックスタート](#-クイックスタートcloudflare-r2) · [パターンでTrack](#-パターンでtrackunilfstrack) · [自動同期](#-自動同期--gitフック不要) · [CI](Documentation~/ci.md)
 
 </div>
 
@@ -27,6 +27,7 @@ Git LFSの無料枠は小さく（GitHubはストレージ1GB・帯域1GB/月）
 - **`.meta`はgitに残る** — GUIDはマニフェストにも記録するので、クローンしても新しいGUIDで取り込み直されない
 - **コンテンツアドレス方式＋検証付き** — ブロブはSHA-256名で保存し、ダウンロードは必ずハッシュ検証
 - **自動同期** — gitフック無しで、欠けた/古くなったファイルのPullもローカル変更のPushも自動
+- **パターンでTrack** — コミットするテキストファイル1枚（`unilfs.track`。git-lfsの`.gitattributes`にあたるもの）に「`*.psd`はストレージ行き」と書けば、以後インポートされたファイルは誰も覚えていなくても追跡される
 - **マージしやすいマニフェスト** — 1ファイル1行・ソート済みなのでPRがレビューしやすい
 - **CI対応** — バッチモード用エントリポイント、環境変数での認証、Unity不要の検証ゲート
 
@@ -44,7 +45,7 @@ flowchart LR
     M <-- "git push / pull" --> G
 ```
 
-1. **Track** — 大きいファイルを選ぶと、UniLFSはそれをこのマシンにステージし（`unilfs.staged.json`）、`.git/info/exclude`で即座にgitから隠します。ハッシュは取らず、コミット対象のファイルは何も変わりません。ステージは「このマシンの意思」であって、何かが存在するという主張ではないからです。
+1. **Track** — 大きいファイルを選ぶ（または[`unilfs.track`](#-パターンでtrackunilfstrack)に`*.psd`のようなパターンを一度書いて選ばせる）と、UniLFSはそれをこのマシンにステージし（`unilfs.staged.json`）、`.git/info/exclude`で即座にgitから隠します。ハッシュは取らず、コミット対象のファイルは何も変わりません。ステージは「このマシンの意思」であって、何かが存在するという主張ではないからです。
 2. **Push** — リモートに無いブロブだけをアップロードし（`objects/<aa>/<sha256>`、重複排除）、**その確認が取れてはじめて**`unilfs.manifest.json`のエントリと`.gitignore`管理ブロックの行を書きます。新規ファイルでも変更ファイルでも「エントリがある＝ストレージに中身がある」ので、コミットされたマニフェストが存在しないブロブを指すことはありません。
 3. **Pull** — チームメイト（やCI）は、マニフェストにあってローカルに無いファイルと、他の人がより新しい版をPushしたファイルをダウンロードします。プロジェクトに書き込む前に必ずハッシュ検証します。
 
@@ -56,6 +57,7 @@ flowchart LR
 ```
 your-project/
 ├── unilfs.manifest.json     ← gitにコミット（パス + sha256 + サイズだけの小さいファイル）
+├── unilfs.track             ← gitにコミット（追跡するパターンの一覧）
 ├── unilfs.staged.json       ← コミットされない（このマシンで追跡中・未Push）
 ├── .gitignore               ← UniLFSが管理ブロックを自動維持
 ├── Assets/
@@ -117,8 +119,9 @@ https://github.com/Plumvery/UniLFS.git#v0.2.0
    - Access Key ID / Secret Access Key（ユーザーごとに保存、コミットされない）
 3. **Test Connection** を押す
 4. Projectウィンドウで大きいアセットを選択 → 右クリック → `UniLFS > Track Selected`
+   もしくはプロジェクト全体に一度で指定: [`unilfs.track`](#-パターンでtrackunilfstrack)に`*.psd`と書いて **Track Matching** を押す
 5. `Window > UniLFS` を開いて **Push**
-6. `unilfs.manifest.json`・`.gitignore`・`ProjectSettings/UniLFSSettings.json`・アセットの`.meta`をコミット。
+6. `unilfs.manifest.json`・`unilfs.track`・`.gitignore`・`ProjectSettings/UniLFSSettings.json`・アセットの`.meta`をコミット。
    すでにgitにコミット済みだったファイルは、Consoleに表示される `git rm --cached` コマンドを実行してください。
 
 チームメイトは「clone → Project Settingsで自分の認証情報を入力 → プロジェクトを開く」だけ。UniLFSが欠けているファイルを検知してPullを提案します。もちろん `Window > UniLFS` → **Pull** の手動操作も可能です。
@@ -135,6 +138,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 | Restore Modified | ローカル変更・衝突をマニフェストの版で上書き（確認ダイアログあり） |
 | Keep Mine | 衝突をローカル側の採用で解決（記録するだけ。実際のアップロードは次のPush） |
 | Track / Untrack Selected | `Assets > UniLFS` の右クリックメニューと同じ |
+| Track Matching | [`unilfs.track`](#-パターンでtrackunilfstrack)に一致する未追跡ファイルをプロジェクト全体からまとめてTrack |
 
 状態表示: **staged**（このマシンで追跡中・未アップロード。マニフェストに無いので他の人からは見えない。Pushが必要）/ **up to date**（マニフェストと一致し、ストレージ上の blob も確認済み）/ **not pushed**（マニフェストとは一致するが、このマシンからのアップロードが確認できていない）/ **modified**（自分のローカル変更が未Push）/ **outdated**（他の人がより新しい版をPush済み。Pullが必要）/ **conflicted**（前回同期以降こちらとマニフェストの両方が変わった、または同じパスを両者が独立にTrackした）/ **missing**（Pullが必要）。
 
@@ -143,6 +147,37 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 `Library/UniLFS/` を消すと、その時点ですでに乖離しているファイルは再び **modified** に戻ります — 推測でローカルを上書きしない安全側の判定です。この状態のファイルは Auto Push の対象外になります（手動 Push なら従来どおり対象）。基準は、次にローカルとマニフェストが一致した時点で自動的に記録し直されます。
 
 「確認済み」かどうかは Push / Pull / Verify が blob の存在を証明したときに `Library/UniLFS/` へ記録されるため、一覧の描画自体にネットワーク通信は発生しません。その証明を取り直すのが **Refresh** ボタンで、マニフェスト上の全 blob をストレージに問い合わせます。clone 直後（まだ何も確認していない状態）で全ファイルが not pushed 表示になるのが解消されるのも、バケットから消された blob が **not pushed** に戻るのもこの経路です。ウィンドウを開いたときと Push / Pull 直後の再チェックはローカルのみで、通信は発生しません。
+
+## 🎯 パターンでTrack（`unilfs.track`）
+
+1ファイルずつ選ぶやり方は、数個なら十分でもチームの決まりごとにはなりません。決まりごとの方を書いてしまいます。`unilfs.track` はgitにコミットするテキストファイルで、`git lfs track` が生成する `.gitattributes` にあたるもの — ただしこちらは好きなテキストエディタで直接書きます。
+
+```
+# UniLFS: 下の行に一致するファイルは、gitではなくストレージに置かれます
+*.psd
+*.mp4
+Assets/Movies/
+!Assets/Movies/thumbs/*.png
+```
+
+| 書き方 | 意味 |
+|--------|------|
+| `*.psd` | `/`を含まない: **ファイル名**に対して照合。階層は問わない |
+| `Assets/Movies/` | 末尾が`/`: そのフォルダ配下すべて |
+| `Assets/**/*.wav` | `**`はフォルダを跨ぐ。`*`は1つの名前の中だけ、`?`は1文字 |
+| `!Assets/UI/*.psd` | `!`は除外。**最後に一致した行が勝つ**ので、後の行で再度含めることもできる |
+| `# メモ` | コメント行と空行は無視 |
+
+大文字小文字は区別しません。何を書いても、`.meta`・UniLFS自身のファイル・`Library/` `Temp/` `Logs/` `obj/` `UserSettings/` `.git/` 配下には一致しません。
+
+これを使うのは2か所です:
+
+- **Track Matching**（`Window > UniLFS`） — プロジェクト全体を走査し、一致する未追跡ファイルをまとめてTrack。ファイルを書いた直後や、`git pull` でチームメイトのパターンが増えたときに押します
+- **Auto Track**（既定でオン。`Edit > Project Settings > UniLFS`） — インポート・移動されたファイルが一致したらその場でTrack。新しい`.psd`は置かれた瞬間からgitの外です
+
+どちらも行うのは *Track* だけです。ファイルはこのマシンにステージされgitから隠されるだけで、アップロードとマニフェストへの記録は従来どおり **Push** の仕事です。パターンに一致するファイルをUntrackしても次のインポートで再びTrackされるので、外したいものは`!`の行を書いてください。
+
+バッチモード: `-executeMethod UniLFS.Editor.UniLfsCli.Track`（そのあと `...UniLfsCli.Push`）。
 
 ## 🔄 自動同期 — gitフック不要
 
@@ -161,6 +196,7 @@ Google Driveを使う場合は [Documentation~/setup-google-drive.md](Documentat
 | ファイル | コミット | 内容 |
 |----------|---------|------|
 | `unilfs.manifest.json` | ✅ | 追跡パス + SHA-256 + サイズ（Pushで確認済みの内容だけ） |
+| `unilfs.track` | ✅ | ストレージに置くファイルのパターン一覧（手で編集するプレーンテキスト） |
 | `unilfs.staged.json` | ❌（自動でgitignore） | このマシンで追跡開始し、まだPushしていないパス |
 | `ProjectSettings/UniLFSSettings.json` | ✅ | プロバイダ、エンドポイント、バケット、フォルダIDなど |
 | `.gitignore`（管理ブロック） | ✅ | マニフェスト上のパス、認証ファイル、ステージファイル |
@@ -178,7 +214,7 @@ Unity -batchmode -nographics -quit -projectPath . \
   -executeMethod UniLFS.Editor.UniLfsCli.Pull
 ```
 
-`Pull` / `Push` / `Verify` / `Status` が使えます。エラーがあるとプロセスは非ゼロで終了します。Unity不要の検証ゲートとGitHub Actionsの実例は [Documentation~/ci.md](Documentation~/ci.md) へ。
+`Pull` / `Push` / `Track` / `Verify` / `Status` が使えます。エラーがあるとプロセスは非ゼロで終了します（`Track` は `unilfs.track` に一致するファイルをステージするだけなので、続けて `Push` を実行してください）。Unity不要の検証ゲートとGitHub Actionsの実例は [Documentation~/ci.md](Documentation~/ci.md) へ。
 
 ## 🔀 マージの挙動
 
@@ -195,7 +231,6 @@ Unity -batchmode -nographics -quit -projectPath . \
 ## 🗺️ ロードマップ
 
 - ブロブのprune / GC
-- パターン指定の自動追跡（フォルダ以下を全部追跡など）
 - マルチパートアップロード
 - OpenUPM掲載
 

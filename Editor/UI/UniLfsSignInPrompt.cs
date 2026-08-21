@@ -105,8 +105,9 @@ namespace UniLFS.Editor
                     UniLfsCredentials.DriveClientSecret(settings, user),
                     CancellationToken.None);
                 user.driveRefreshToken = tokens.RefreshToken;
+                user.driveAccountEmail = tokens.AccountEmail ?? "";
                 user.Save();
-                Debug.Log("UniLFS: signed in to Google Drive.");
+                Debug.Log("UniLFS: " + GoogleOAuth.DescribeSignIn(user.driveAccountEmail));
             }
             catch (Exception e)
             {

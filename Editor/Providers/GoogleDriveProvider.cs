@@ -57,6 +57,9 @@ namespace UniLFS.Editor
         GoogleTokenSet _tokens;
         readonly SemaphoreSlim _tokenLock = new SemaphoreSlim(1, 1);
         readonly Dictionary<string, string> _fileIdCache = new Dictionary<string, string>();
+        readonly SemaphoreSlim _emailLock = new SemaphoreSlim(1, 1);
+        string _accountEmail;
+        volatile bool _accountEmailResolved;
 
         public string DisplayName
         {
@@ -90,6 +93,113 @@ namespace UniLFS.Editor
             {
                 _tokenLock.Release();
             }
+        }
+
+        /// <summary>
+        /// The signed-in account's address, for failure messages only.
+        ///
+        /// Resolved at most once per provider and cached even when the lookup
+        /// fails, and called only from diagnostic paths, so an ordinary transfer
+        /// never pays for it. It returns null for every failure except a
+        /// cancellation of the caller's token: an error message must not be able
+        /// to replace the error it was meant to explain, but a cancelled
+        /// operation still has to surface as cancelled.
+        /// </summary>
+        async Task<string> AccountEmailForMessagesAsync(CancellationToken ct)
+        {
+            if (_accountEmailResolved) return _accountEmail;
+            try
+            {
+                await _emailLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    if (!_accountEmailResolved)
+                    {
+                        // The shared HttpClient has no timeout, and two callers
+                        // reach the not-found path with CancellationToken.None
+                        // (the CLI and auto sync), so without a deadline of its
+                        // own a stalled 'about' request would hang the error
+                        // report rather than merely leave the address out of it.
+                        using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                        {
+                            deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                            try
+                            {
+                                string token = await AccessTokenAsync(deadline.Token).ConfigureAwait(false);
+                                _accountEmail = await GoogleOAuth.FetchAccountEmailAsync(token, deadline.Token).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                            {
+                                // Deadline hit: leave the address unknown.
+                            }
+                            finally
+                            {
+                                // Resolved either way - a lookup that failed once
+                                // is not worth repeating on every later message.
+                                _accountEmailResolved = true;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    _emailLock.Release();
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // A cancelled Pull must still surface as cancelled, not as a
+                // storage error with an anonymous account in it.
+                return null;
+            }
+            return _accountEmail;
+        }
+
+        /// <summary>" (signed in as a@b.example)", or nothing when the address is unknown.</summary>
+        static string AccountPhrase(string email)
+        {
+            return string.IsNullOrEmpty(email) ? "" : " (signed in as " + email + ")";
+        }
+
+        /// <summary>
+        /// The address when it is known; when it is not, a phrase that still
+        /// tells the reader where to look it up, since "share the folder with
+        /// this account" is not actionable on its own.
+        /// </summary>
+        static string AccountOrThis(string email)
+        {
+            return string.IsNullOrEmpty(email)
+                ? "this account (the address shown under Account in the settings)"
+                : email;
+        }
+
+        /// <summary>
+        /// The "blob is missing" wording, composed in one place so a test can
+        /// read it back: it is assembled from fragments that are present or
+        /// absent depending on whether the address is known, which is exactly
+        /// the shape that produces a stray double space or a broken sentence.
+        /// </summary>
+        internal static string NotFoundMessage(string hash, string email)
+        {
+            return "Blob " + hash.Substring(0, 8) + "... was not found in the Google Drive folder" + AccountPhrase(email)
+                + ". Either it was never pushed, the folder ID is wrong, or this Google account cannot see"
+                + " the folder's contents - ask the folder owner to share the folder with " + AccountOrThis(email)
+                + ", or sign in with a different account in Project Settings > UniLFS.";
+        }
+
+        /// <summary>
+        /// The Test Connection wording. For a folder with files and an unknown
+        /// address it is byte for byte what 0.5.0 said: the diagnostics are for
+        /// the cases that go wrong, and the everyday success stays terse.
+        /// </summary>
+        internal static string ConnectedMessage(string folderName, bool sawAnyFile, string email)
+        {
+            string connected = "Connected to Google Drive folder '" + folderName + "'" + AccountPhrase(email);
+            if (sawAnyFile) return connected + ".";
+            return connected + ", but this account sees no files in it. That is expected for a brand-new folder;"
+                + " if teammates have already pushed, the folder's contents are not visible to this account"
+                + " - ask the owner to share the folder with " + AccountOrThis(email)
+                + ", or sign in with a different account.";
         }
 
         async Task<HttpRequestMessage> AuthorizedRequestAsync(HttpMethod method, string url, CancellationToken ct)
@@ -165,7 +275,15 @@ namespace UniLFS.Editor
         {
             string id = await FindFileIdAsync(hash, ct).ConfigureAwait(false);
             if (id == null)
-                throw new UniLfsStorageException("Blob " + hash.Substring(0, 8) + "... was not found in the Google Drive folder. The pusher may not have pushed yet, or the folder ID is wrong.");
+            {
+                // The old message named only the two causes that involve someone
+                // else's mistake, which sent people to interrogate the pusher
+                // while the real answer was that this account cannot see inside
+                // the folder - so the message now names the account it searched
+                // as, and the third possibility.
+                string email = await AccountEmailForMessagesAsync(ct).ConfigureAwait(false);
+                throw new UniLfsStorageException(NotFoundMessage(hash, email));
+            }
             using (var request = await AuthorizedRequestAsync(HttpMethod.Get, ApiBase + "/files/" + id + "?alt=media&supportsAllDrives=true", ct).ConfigureAwait(false))
             using (var response = await UniLfsHttp.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
             {
@@ -175,8 +293,19 @@ namespace UniLFS.Editor
             }
         }
 
+        /// <summary>
+        /// Checks that the folder is there, and then that this account can
+        /// actually list what is inside it.
+        ///
+        /// Reading a folder's metadata and reading its contents are separate
+        /// permissions on Drive, so the name lookup alone reported "Connected"
+        /// for an account that could not see a single blob - success on the
+        /// settings page minutes before every Pull failed with "not found". The
+        /// listing probe is what makes the two agree.
+        /// </summary>
         public async Task<string> TestConnectionAsync(CancellationToken ct)
         {
+            string folderName;
             string url = ApiBase + "/files/" + _folderId + "?fields=" + Uri.EscapeDataString("id,name,mimeType") + "&supportsAllDrives=true";
             using (var request = await AuthorizedRequestAsync(HttpMethod.Get, url, ct).ConfigureAwait(false))
             using (var response = await UniLfsHttp.Client.SendAsync(request, ct).ConfigureAwait(false))
@@ -186,8 +315,34 @@ namespace UniLFS.Editor
                 var file = JsonUtility.FromJson<DriveFile>(json);
                 if (file == null || file.mimeType != "application/vnd.google-apps.folder")
                     throw new UniLfsStorageException("The configured Google Drive ID exists but is not a folder.");
-                return "Connected to Google Drive folder '" + file.name + "'.";
+                folderName = file.name;
             }
+
+            bool sawAnyFile;
+            string listUrl = ApiBase + "/files?q=" + Uri.EscapeDataString("'" + _folderId + "' in parents and trashed=false")
+                + "&fields=" + Uri.EscapeDataString("files(id)")
+                + "&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true";
+            using (var request = await AuthorizedRequestAsync(HttpMethod.Get, listUrl, ct).ConfigureAwait(false))
+            using (var response = await UniLfsHttp.Client.SendAsync(request, ct).ConfigureAwait(false))
+            {
+                string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) throw DriveError("files.list", (int)response.StatusCode, json);
+                var list = JsonUtility.FromJson<DriveFileList>(json);
+                sawAnyFile = list != null && list.files != null && list.files.Length > 0;
+            }
+
+            string email;
+            try
+            {
+                email = await AccountEmailForMessagesAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Both probes already succeeded; a timeout during the diagnostic
+                // lookup must not turn that into "Connection failed".
+                email = null;
+            }
+            return ConnectedMessage(folderName, sawAnyFile, email);
         }
 
         /// <summary>Creates a folder in the signed-in user's My Drive and returns its ID.</summary>
@@ -235,6 +390,7 @@ namespace UniLFS.Editor
         public void Dispose()
         {
             _tokenLock.Dispose();
+            _emailLock.Dispose();
         }
     }
 }

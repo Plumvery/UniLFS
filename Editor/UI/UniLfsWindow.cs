@@ -218,8 +218,9 @@ namespace UniLFS.Editor
                     UniLfsCredentials.DriveClientSecret(_settings, _user),
                     CancellationToken.None);
                 _user.driveRefreshToken = tokens.RefreshToken;
+                _user.driveAccountEmail = tokens.AccountEmail ?? "";
                 _user.Save();
-                _lastMessage = "Signed in to Google Drive.";
+                _lastMessage = GoogleOAuth.DescribeSignIn(_user.driveAccountEmail);
             }
             catch (Exception e)
             {

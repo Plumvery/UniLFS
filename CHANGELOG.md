@@ -5,6 +5,21 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-21
+
+### Fixed
+
+- **Google sign-in now asks which account to use.** The consent URL requested `prompt=consent`, and Google skips the account chooser when the browser holds a single session — so pressing **Sign in with Google** signed you in as whichever account that browser happened to have open, without asking and without saying whose it was. On the wrong account every Pull then failed with `Blob xxxxxxxx... was not found in the Google Drive folder`, a message that reads as "nobody pushed it yet" and sent people to interrogate the pusher rather than the account they were signed in with. The URL now asks for `select_account` as well, so the chooser appears every time and the choice is made deliberately.
+
+### Added
+
+- **The signed-in address is recorded, shown and logged.** Sign-in now reads the account's email from the Drive API and puts it where the question comes up: *Signed in as ...* under **Account** in `Edit > Project Settings > UniLFS`, the Console line the startup prompt writes, and the failure messages that hinge on it. It is stored next to the refresh token in the per-user `UserSettings/UniLFS.json` as `driveAccountEmail` and cleared with it on **Sign out** — informational only, since the token remains the credential. Settings files written by earlier versions load unchanged and read *Signed in* until the next sign-in fills the address in, as does a sign-in whose lookup failed; nothing depends on the answer. When `UNILFS_DRIVE_REFRESH_TOKEN` is set the row says so instead (*Signed in via UNILFS_DRIVE_REFRESH_TOKEN*), because Push and Pull use that token rather than the stored one and naming the stored account would be wrong.
+- **Test Connection also checks that the account can see inside the folder.** Reading a folder's name and listing its contents are separate permissions, so the old check — which only fetched the folder's metadata — reported "Connected to Google Drive folder 'X'." for an account that could not see a single blob in it, minutes before every Pull failed. It now lists the folder as well, and says when the listing comes back empty: harmless for a brand-new folder, and the explanation you need when teammates have already pushed.
+
+### Changed
+
+- The "blob not found" message names the account it searched as, and offers the cause it used to omit: the folder's contents may not be visible to that account. Sharing the folder with the address in the message, or signing in with a different one, is the fix in that case.
+
 ## [0.5.0] - 2026-08-11
 
 ### Added

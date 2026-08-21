@@ -150,12 +150,35 @@ namespace UniLFS.Editor
         public string driveClientSecret = "";
         public string driveRefreshToken = "";
 
+        /// <summary>
+        /// The address of the account that minted <c>driveRefreshToken</c>,
+        /// recorded so the settings page and the Console can say *which*
+        /// Google account is signed in - the browser can pick one without
+        /// asking, and nothing else on screen reveals which one it picked.
+        /// Informational only: the token is the credential, this is never sent
+        /// to Drive, and it is cleared together with the token on sign out.
+        /// <c>JsonUtility.FromJsonOverwrite</c> leaves the default in place for
+        /// a field the file does not mention, so settings written by earlier
+        /// versions load unchanged and no migration is needed.
+        /// </summary>
+        public string driveAccountEmail = "";
+
         public static UniLfsUserSettings Load()
+        {
+            return LoadFrom(UniLfsPaths.UserSettingsFilePath);
+        }
+
+        /// <summary>
+        /// Split out so tests can read a file that is not this machine's real
+        /// credential file - in particular one written by an earlier version,
+        /// which is the only way to prove that a field added later defaults
+        /// cleanly instead of taking the refresh token down with it.
+        /// </summary>
+        internal static UniLfsUserSettings LoadFrom(string path)
         {
             var settings = new UniLfsUserSettings();
             try
             {
-                var path = UniLfsPaths.UserSettingsFilePath;
                 if (File.Exists(path))
                     JsonUtility.FromJsonOverwrite(File.ReadAllText(path, Encoding.UTF8), settings);
             }

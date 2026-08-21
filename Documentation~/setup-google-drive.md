@@ -31,7 +31,7 @@ UniLFS talks to the Drive API as **your own OAuth app**, so you first create a (
 
 1. Provider: **Google Drive**.
 2. Paste Client ID / Client Secret (project-level for private repos, per-user for public repos; `UNILFS_DRIVE_CLIENT_ID` / `UNILFS_DRIVE_CLIENT_SECRET` also work).
-3. Press **Sign in with Google**. A browser opens; finish the consent screen (including the unverified-app warning if shown). The refresh token is stored per-user in `UserSettings/UniLFS.json` (gitignored).
+3. Press **Sign in with Google**. A browser opens and Google asks **which account to use** — pick the one that has access to the storage folder (step 5), then finish the consent screen (including the unverified-app warning if shown). Back in the settings page, *Account* shows the address you picked ("Signed in as ..."). The refresh token is stored per-user in `UserSettings/UniLFS.json` (gitignored).
 
 ## 5. Pick a storage folder
 
@@ -43,7 +43,7 @@ Either:
 
 Folders on **shared drives** also work (UniLFS passes `supportsAllDrives`).
 
-Press **Test Connection** — you should see the folder's name.
+Press **Test Connection** — you should see the folder's name and the signed-in account (when it could be read).
 
 ## Notes & caveats
 
@@ -51,4 +51,5 @@ Press **Test Connection** — you should see the folder's name.
 - Drive API rate limits are per-user and modest; UniLFS uses up to `Parallel Transfers` concurrent requests (lower it if you hit 403 rate-limit errors).
 - Every team member signs in with their **own** Google account; they only need access to the shared folder.
 - **Sign out** in the settings removes the local token. To fully revoke access, also visit [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+- If **Test Connection** finds the folder but reports that the account sees no files, or Pull says blobs were not found, check the address shown under *Account* first: the folder has to be shared with **that** account, which is not necessarily the one you meant to use. **Sign out** then **Sign in with Google** to switch accounts.
 - For CI, mint the refresh token once on a developer machine and set it as `UNILFS_DRIVE_REFRESH_TOKEN` (with client ID/secret) — see [ci.md](ci.md).

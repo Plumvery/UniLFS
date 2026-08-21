@@ -184,7 +184,23 @@ namespace UniLFS.Editor
 
             EditorGUILayout.Space(8);
             bool signedIn = !string.IsNullOrEmpty(_user.driveRefreshToken);
-            EditorGUILayout.LabelField("Account", signedIn ? "Signed in" : "Not signed in");
+            // Which account, not just whether: a token minted before UniLFS
+            // recorded the address (or after a failed lookup) still only says
+            // "Signed in", but a fresh sign-in names the account whose access to
+            // the folder is the thing that actually matters.
+            //
+            // The environment variable comes first because UniLfsCredentials
+            // prefers it over the stored token: with both set, naming the
+            // signed-in account here would name an account Push and Pull are
+            // not using.
+            string account;
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(UniLfsCredentials.EnvDriveRefreshToken)))
+                account = "Signed in via " + UniLfsCredentials.EnvDriveRefreshToken + " (account unknown)";
+            else if (!signedIn)
+                account = "Not signed in";
+            else
+                account = string.IsNullOrEmpty(_user.driveAccountEmail) ? "Signed in" : "Signed in as " + _user.driveAccountEmail;
+            EditorGUILayout.LabelField("Account", account);
             using (FieldColumn.Open())
             using (new EditorGUI.DisabledScope(_working))
             {
@@ -195,6 +211,7 @@ namespace UniLFS.Editor
                     if (GUILayout.Button("Sign out", GUILayout.Width(90)))
                     {
                         _user.driveRefreshToken = "";
+                        _user.driveAccountEmail = "";
                         _user.Save();
                         SetStatus("Signed out. (The token was only removed locally.)", MessageType.Info);
                     }
@@ -370,8 +387,9 @@ namespace UniLFS.Editor
                 string clientSecret = UniLfsCredentials.DriveClientSecret(_settings, _user);
                 var tokens = await GoogleOAuth.SignInAsync(clientId, clientSecret, CancellationToken.None);
                 _user.driveRefreshToken = tokens.RefreshToken;
+                _user.driveAccountEmail = tokens.AccountEmail ?? "";
                 _user.Save();
-                SetStatus("Signed in to Google Drive.", MessageType.Info);
+                SetStatus(GoogleOAuth.DescribeSignIn(_user.driveAccountEmail), MessageType.Info);
             }
             catch (Exception e)
             {

@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -21,11 +22,34 @@ namespace UniLFS.Editor
         public string error_description;
     }
 
+    /// <summary>
+    /// Shape of the Drive <c>about</c> response UniLFS asks for:
+    /// <c>{"user":{"emailAddress":"..."}}</c>.
+    /// </summary>
+    [Serializable]
+    class DriveAbout
+    {
+        public DriveAboutUser user;
+    }
+
+    [Serializable]
+    class DriveAboutUser
+    {
+        public string emailAddress;
+    }
+
     public class GoogleTokenSet
     {
         public string AccessToken;
         public string RefreshToken;
         public DateTimeOffset ExpiresAtUtc;
+
+        /// <summary>
+        /// Address of the account that granted these tokens, for display and log
+        /// messages. May be null: the lookup is best effort and sign-in succeeds
+        /// whether or not it answered.
+        /// </summary>
+        public string AccountEmail;
     }
 
     /// <summary>
@@ -37,6 +61,7 @@ namespace UniLFS.Editor
         public const string Scope = "https://www.googleapis.com/auth/drive";
         const string AuthEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
         const string TokenEndpoint = "https://oauth2.googleapis.com/token";
+        const string AboutEndpoint = "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)";
 
         /// <summary>
         /// Must be called from the main thread (it opens the system browser).
@@ -76,16 +101,7 @@ namespace UniLFS.Editor
 
             try
             {
-                string authUrl = AuthEndpoint
-                    + "?response_type=code"
-                    + "&client_id=" + Uri.EscapeDataString(clientId.Trim())
-                    + "&redirect_uri=" + Uri.EscapeDataString(redirectUri)
-                    + "&scope=" + Uri.EscapeDataString(Scope)
-                    + "&state=" + Uri.EscapeDataString(state)
-                    + "&code_challenge=" + challenge
-                    + "&code_challenge_method=S256"
-                    + "&access_type=offline"
-                    + "&prompt=consent";
+                string authUrl = BuildAuthUrl(clientId, redirectUri, state, challenge);
                 Application.OpenURL(authUrl);
 
                 using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
@@ -119,13 +135,107 @@ namespace UniLFS.Editor
                         + "&redirect_uri=" + Uri.EscapeDataString(redirectUri)
                         + "&code_verifier=" + verifier
                         + "&grant_type=authorization_code";
-                    return await ExchangeAsync(body, null, ct).ConfigureAwait(false);
+                    var tokens = await ExchangeAsync(body, null, ct).ConfigureAwait(false);
+                    // Knowing which account was just signed in is what makes a later
+                    // "not found" answerable, but it must not be able to fail a
+                    // sign-in that already succeeded - hence best effort.
+                    tokens.AccountEmail = await FetchAccountEmailAsync(tokens.AccessToken, ct).ConfigureAwait(false);
+                    return tokens;
                 }
             }
             finally
             {
                 try { listener.Close(); } catch (Exception) { }
             }
+        }
+
+        /// <summary>
+        /// Builds the consent URL for the loopback flow.
+        ///
+        /// <c>prompt</c> asks for <c>select_account</c> alongside <c>consent</c>
+        /// because a browser holding a single Google session skips the account
+        /// chooser entirely: the user presses "Sign in with Google", is never
+        /// asked, and ends up signed in as whichever account that browser had
+        /// open - possibly one that cannot see the Drive folder at all, with
+        /// nothing on screen naming it. The only symptom was every Pull failing
+        /// with "not found".
+        /// </summary>
+        internal static string BuildAuthUrl(string clientId, string redirectUri, string state, string codeChallenge)
+        {
+            return AuthEndpoint
+                + "?response_type=code"
+                + "&client_id=" + Uri.EscapeDataString(clientId.Trim())
+                + "&redirect_uri=" + Uri.EscapeDataString(redirectUri)
+                + "&scope=" + Uri.EscapeDataString(Scope)
+                + "&state=" + Uri.EscapeDataString(state)
+                + "&code_challenge=" + codeChallenge
+                + "&code_challenge_method=S256"
+                + "&access_type=offline"
+                + "&prompt=" + Uri.EscapeDataString("consent select_account");
+        }
+
+        /// <summary>
+        /// Reads the signed-in account's address, so the UI and the Console can
+        /// say *which* Google account is in use.
+        ///
+        /// Best effort by design: it returns null on any failure instead of
+        /// throwing, because nothing UniLFS does depends on the answer - the
+        /// refresh token is the credential, and the address is only there for the
+        /// human reading the message.
+        /// </summary>
+        public static async Task<string> FetchAccountEmailAsync(string accessToken, CancellationToken ct)
+        {
+            if (string.IsNullOrEmpty(accessToken)) return null;
+            try
+            {
+                using (var request = new HttpRequestMessage(HttpMethod.Get, AboutEndpoint))
+                {
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                    using (var response = await UniLfsHttp.Client.SendAsync(request, ct).ConfigureAwait(false))
+                    {
+                        string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        if (!response.IsSuccessStatusCode) return null;
+                        return ParseAccountEmail(json);
+                    }
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Pulls the address out of a Drive <c>about</c> response. Returns null
+        /// for anything it cannot read - absent, empty or malformed JSON alike -
+        /// and never throws.
+        /// </summary>
+        internal static string ParseAccountEmail(string aboutJson)
+        {
+            if (string.IsNullOrEmpty(aboutJson)) return null;
+            try
+            {
+                var about = JsonUtility.FromJson<DriveAbout>(aboutJson);
+                if (about == null || about.user == null || string.IsNullOrEmpty(about.user.emailAddress))
+                    return null;
+                return about.user.emailAddress;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The single wording for "sign-in succeeded", shared by the settings
+        /// page, the window and the startup prompt so the three cannot drift
+        /// apart - and so all three name the account when it is known.
+        /// </summary>
+        public static string DescribeSignIn(string accountEmail)
+        {
+            return string.IsNullOrEmpty(accountEmail)
+                ? "Signed in to Google Drive. (Could not read the account's email address.)"
+                : "Signed in to Google Drive as " + accountEmail + ".";
         }
 
         public static Task<GoogleTokenSet> RefreshAsync(string clientId, string clientSecret, string refreshToken, CancellationToken ct)

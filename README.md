@@ -24,7 +24,7 @@ Git LFS free tiers are tiny (GitHub: 1 GB storage / 1 GB bandwidth per month) an
 
 - **No git-lfs, no CLI tools, no server** — a pure Unity editor package
 - **Bring your own storage** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi (S3 API), or Google Drive
-- **`.meta` files stay in git** — and their GUIDs are recorded in the manifest, so a clone never re-imports tracked assets under new ones
+- **`.meta` files stay in git** — a fresh clone gets them back from git with their import settings, and their GUIDs are recorded in the manifest as a fallback, so a clone never re-imports tracked assets under new ones
 - **Content-addressed & verified** — blobs are stored by SHA-256 and every download is hash-checked
 - **Auto sync** — missing and outdated files are pulled and local changes are pushed without git hooks
 - **Track by pattern** — one committed text file (`unilfs.track`, the `.gitattributes` of this package) says `*.psd` belongs in storage, and new imports are tracked without anyone remembering to

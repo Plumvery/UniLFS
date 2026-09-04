@@ -92,7 +92,7 @@ namespace UniLFS.Editor.Tests
             Commit(_a, _b, false);
 
             var guard = Guard(_b);
-            Assert.AreEqual(1, guard.MetaFilesRestored, "the GUID in the manifest is what puts the .meta back");
+            Assert.AreEqual(1, guard.MetaFilesRebuilt, "the GUID in the manifest is what puts the .meta back");
             Assert.AreEqual(1, guard.PlaceholdersWritten);
             Assert.AreEqual(AssetGuid, MetaGuid(_b, Asset));
             Assert.IsTrue(UniLfsPlaceholder.IsPlaceholder(_b.Abs(Asset)));
@@ -252,7 +252,7 @@ namespace UniLFS.Editor.Tests
             WriteMeta(_b, Asset, OtherGuid);
             var drifted = Guard(_b);
             CollectionAssert.Contains(drifted.GuidDrift, Asset);
-            Assert.AreEqual(0, drifted.MetaFilesRestored, "the .meta is wrong, not missing");
+            Assert.AreEqual(0, drifted.MetaFilesRebuilt, "the .meta is wrong, not missing");
             Assert.AreEqual(0, drifted.PlaceholdersWritten, "the content is right there");
 
             // The same disagreement with the content gone: this is the shape the
@@ -261,7 +261,7 @@ namespace UniLFS.Editor.Tests
             DeleteAsset(_b, Asset);
             var stillDrifted = Guard(_b);
             CollectionAssert.Contains(stillDrifted.GuidDrift, Asset);
-            Assert.AreEqual(0, stillDrifted.MetaFilesRestored);
+            Assert.AreEqual(0, stillDrifted.MetaFilesRebuilt);
 
             AssertNoErrors(Pull(_b));
             Assert.AreEqual("version one", ReadAsset(_b, Asset), "the content is not in doubt");
@@ -332,7 +332,7 @@ namespace UniLFS.Editor.Tests
 
             var guard = Guard(_b);
             CollectionAssert.Contains(guard.MetaMissingNoGuid, Asset);
-            Assert.AreEqual(0, guard.MetaFilesRestored, "there is no recorded GUID to restore one from");
+            Assert.AreEqual(0, guard.MetaFilesRebuilt, "there is no recorded GUID to restore one from");
             Assert.AreEqual(1, guard.PlaceholdersWritten, "the stand-in still keeps whatever Unity mints stable");
             Assert.IsFalse(HasMeta(_b, Asset));
 

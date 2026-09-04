@@ -5,6 +5,16 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-09-04
+
+### Fixed
+
+- **A fresh clone keeps the import settings of tracked assets.** `.meta` files are committed, but a tracked asset is not — so a clone has `Foo.psd.meta` with no `Foo.psd`, and Unity discards an orphaned `.meta` before any managed code runs. `UniLfsMetaGuard` rebuilt it from the GUID recorded in the manifest, which saved every reference to the asset but carried no importer section: non-default import settings were silently reset to their defaults, and the `.meta` stayed dirty in the working tree until somebody ran `git checkout -- <path>.meta` by hand. The guard now runs that itself, before rebuilding anything — the committed `.meta` comes back exactly as it was, importer section and all, and the working tree is clean again. Rebuilding from the manifest is still there for what git cannot answer: no git on `PATH`, or a `.meta` that was never committed. That case keeps the warning it always had; the restore only logs, because nothing was lost.
+
+### Changed
+
+- UniLFS now runs the `git` command line, in this one place and nowhere else. Everything else it needs from a checkout is a file it reads or writes directly, but a committed blob is not — reaching it means the index format, loose objects and packfiles, to re-implement one command every machine with a git checkout already has. A missing git, a timeout and a failure are all treated the same way: restore nothing and fall back to the previous behaviour. Paths git does not know are filtered out first with `ls-files`, because one unknown pathspec makes a whole `git checkout` call fail and would cost every other file its restore.
+
 ## [0.5.2] - 2026-09-04
 
 ### Fixed

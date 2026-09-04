@@ -409,7 +409,8 @@ namespace UniLFS.Editor.Tests
                 return new GuardOutcome
                 {
                     PlaceholdersWritten = report.PlaceholdersWritten,
-                    MetaFilesRestored = report.MetaFilesRestored,
+                    MetaFilesRestoredFromGit = report.MetaFilesRestoredFromGit,
+                    MetaFilesRebuilt = report.MetaFilesRebuilt,
                     MetaMissingNoGuid = report.MetaMissingNoGuid,
                     GuidDrift = report.GuidDrift,
                     RejectedPaths = report.RejectedPaths,
@@ -425,7 +426,10 @@ namespace UniLFS.Editor.Tests
         public class GuardOutcome
         {
             public int PlaceholdersWritten;
-            public int MetaFilesRestored;
+            /// <summary>.meta files git handed back, with their import settings.</summary>
+            public int MetaFilesRestoredFromGit;
+            /// <summary>.meta files rebuilt from the manifest GUID, losing their import settings.</summary>
+            public int MetaFilesRebuilt;
             public List<string> MetaMissingNoGuid = new List<string>();
             /// <summary>Files whose .meta carries a different GUID than the manifest recorded.</summary>
             public List<string> GuidDrift = new List<string>();

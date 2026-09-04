@@ -23,7 +23,7 @@ namespace UniLFS.Editor
         [InitializeOnLoadMethod]
         static void Init()
         {
-            // A modal dialog in batch mode would hang CI forever.
+            // Nothing to ask in batch mode, and nobody there to answer.
             if (Application.isBatchMode) return;
             EditorApplication.delayCall += Check;
         }
@@ -60,24 +60,36 @@ namespace UniLFS.Editor
                 : "This project tracks " + manifest.files.Count + " file(s) with UniLFS, but the storage provider is not ready.\n\n"
                   + "Still missing: " + UniLfsProviderStatus.Describe(missing) + ".";
 
-            int choice = EditorUtility.DisplayDialogComplex(
+            // Prompts turned off (UNILFS_NO_PROMPTS): the reminder still has to
+            // reach the log, or an unattended editor discovers the missing
+            // setup through a failed Push and nothing else.
+            if (UniLfsPrompt.Suppressed)
+            {
+                Debug.LogWarning("UniLFS: " + message.Replace("\n\n", " ")
+                    + " Open Edit > Project Settings > UniLFS to finish setup.");
+                return;
+            }
+
+            UniLfsPrompt.Ask(
                 "UniLFS setup",
                 message,
                 signInOnly ? "Sign in with Google" : "Open Settings",
                 "Later",
-                "Don't ask again");
-
-            switch (choice)
-            {
-                case 0:
-                    if (signInOnly) SignInToGoogleDrive(settings, user);
-                    else SettingsService.OpenProjectSettings("Project/UniLFS");
-                    break;
-                case 2:
-                    EditorPrefs.SetBool(MuteKey(), true);
-                    Debug.Log("UniLFS: setup reminders muted for this project. Re-enable them from the banner in Window > UniLFS.");
-                    break;
-            }
+                "Don't ask again",
+                choice =>
+                {
+                    switch (choice)
+                    {
+                        case 0:
+                            if (signInOnly) SignInToGoogleDrive(settings, user);
+                            else SettingsService.OpenProjectSettings("Project/UniLFS");
+                            break;
+                        case 2:
+                            EditorPrefs.SetBool(MuteKey(), true);
+                            Debug.Log("UniLFS: setup reminders muted for this project. Re-enable them from the banner in Window > UniLFS.");
+                            break;
+                    }
+                });
         }
 
         /// <summary>Lets the UniLFS window undo a "Don't ask again".</summary>

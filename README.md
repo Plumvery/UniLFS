@@ -183,13 +183,15 @@ In batch mode: `-executeMethod UniLFS.Editor.UniLfsCli.Track`, followed by `...U
 
 Because the real bytes only exist on the machines that edit them, syncing has to start client-side (git-lfs works the same way). UniLFS automates both directions from inside the editor, and gives CI a cheap way to catch anything that slips through:
 
-**Auto Pull** — whenever the editor starts or regains focus (exactly what happens right after you run `git pull`), and only when the manifest file itself has changed since the last check, UniLFS re-checks tracked files. If any are missing or outdated, the setting decides: **Ask** (default, dialog), **Automatic** (background download), or **Off** (Console warning only).
+**Auto Pull** — whenever the editor starts or regains focus (exactly what happens right after you run `git pull`), and only when the manifest file itself has changed since the last check, UniLFS re-checks tracked files. If any are missing or outdated, the setting decides: **Ask** (default, a prompt window), **Automatic** (background download), or **Off** (Console warning only).
 
 **Auto Push** — when tracked files have local changes that were never uploaded, UniLFS notices (on focus changes, and in Automatic mode right after the asset is saved/imported) and offers to push — so blobs are already in storage by the time you commit the manifest. Same three modes, default **Ask**.
 
 **CI verify gate** — a [stdlib-only Python script](Documentation~/ci/verify_manifest.py) (no Unity license needed) fails your CI when a committed manifest references blobs missing from storage: the "forgot to push" case can't reach `main` unnoticed. Also available as `UniLfsCli.Verify` and as a pre-push hook — see [Documentation~/ci.md](Documentation~/ci.md).
 
-Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state is handled at most once per editor session, so declining a dialog won't nag you on every focus change.
+Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state is handled at most once per editor session, so declining a prompt won't nag you on every focus change.
+
+**Ask** never blocks the editor: the prompt is a floating window, not a modal dialog, so an editor that starts unattended keeps ticking whether or not anyone answers (closing the window counts as *Later*). For an editor nobody is watching at all — an automation harness, a remote GUI runner — set `UNILFS_NO_PROMPTS=1` and **Ask** writes the Console line **Off** writes instead of opening anything. It is an environment variable because the modes live in committed project settings: one machine cannot turn them off for itself any other way.
 
 ## 🔐 Configuration & credentials
 

@@ -28,11 +28,25 @@ namespace UniLFS.Editor
     /// waiting to be noticed (Auto Track setting).
     ///
     /// Each detected state is handled at most once per editor session
-    /// (SessionState survives domain reloads).
+    /// (SessionState survives domain reloads) — and only once it has actually
+    /// been handled: a state is marked as such when the outcome is known, never
+    /// in advance, or a check that never ran would hide the manifest version it
+    /// failed on for the rest of the session.
+    ///
+    /// Asking is <see cref="UniLfsPrompt"/>'s job and deliberately not a modal
+    /// dialog: these prompts open during editor startup, where nobody has
+    /// promised there is a human to answer them.
     /// </summary>
     static class UniLfsAutoSync
     {
         const string HandledPullStampKey = "UniLFS.AutoSync.HandledManifestStamp";
+        /// <summary>
+        /// The manifest version the "could not check" warning was already
+        /// written for. A check that threw is retried on the next focus change,
+        /// so without this a failure that keeps failing would write a Console
+        /// line every time the editor is alt-tabbed back into.
+        /// </summary>
+        const string WarnedPullStampKey = "UniLFS.AutoSync.WarnedManifestStamp";
         const string HandledPushStateKey = "UniLFS.AutoSync.HandledPushState";
         static bool _running;
 
@@ -134,12 +148,15 @@ namespace UniLFS.Editor
         static async Task CheckPullAsync()
         {
             if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            // A prompt raised by an earlier check is still on screen. It owns
+            // the decision until it is answered — and because the prompt is not
+            // modal, focus changes keep arriving while it waits.
+            if (UniLfsPrompt.IsOpen) return;
 
             var manifestInfo = new FileInfo(UniLfsPaths.ManifestPath);
             if (!manifestInfo.Exists) return;
             string stamp = manifestInfo.LastWriteTimeUtc.Ticks + ":" + manifestInfo.Length;
             if (SessionState.GetString(HandledPullStampKey, "") == stamp) return;
-            SessionState.SetString(HandledPullStampKey, stamp);
 
             List<UniLfsStatusEntry> statuses;
             try
@@ -154,15 +171,21 @@ namespace UniLFS.Editor
             }
             catch (UniLfsBusyException)
             {
-                // Something else holds the lock. Hand the stamp back so the next
-                // focus change retries, rather than marking this manifest
-                // version handled on the strength of a check that never ran.
-                SessionState.SetString(HandledPullStampKey, "");
+                // Something else holds the lock. Nothing about this manifest
+                // version was decided, so it stays unhandled and the next focus
+                // change retries.
                 return;
             }
             catch (Exception e)
             {
-                Debug.LogWarning("UniLFS: could not check tracked files: " + e.Message);
+                // Same: a check that threw decided nothing, so it is retried
+                // too - but only warned about once per manifest version, or a
+                // failure that keeps failing writes a line on every alt-tab.
+                if (SessionState.GetString(WarnedPullStampKey, "") != stamp)
+                {
+                    SessionState.SetString(WarnedPullStampKey, stamp);
+                    Debug.LogWarning("UniLFS: could not check tracked files: " + e.Message);
+                }
                 return;
             }
             if (_running) return;
@@ -171,37 +194,74 @@ namespace UniLFS.Editor
             // outdated are both "storage has content this project does not".
             var pending = statuses.FindAll(s =>
                 s.State == UniLfsFileState.MissingLocal || s.State == UniLfsFileState.Outdated);
-            if (pending.Count == 0) return;
+            if (pending.Count == 0)
+            {
+                // Nothing to download is an outcome like any other: this
+                // manifest version needs no second look.
+                SessionState.SetString(HandledPullStampKey, stamp);
+                return;
+            }
             int outdated = pending.FindAll(s => s.State == UniLfsFileState.Outdated).Count;
 
             switch (UniLfsSettings.Load().AutoPullMode)
             {
                 case UniLfsAutoPullMode.Auto:
+                    SessionState.SetString(HandledPullStampKey, stamp);
                     RunPull();
                     break;
                 case UniLfsAutoPullMode.Ask:
-                    // delayCall: never open a modal dialog from inside the focus event
+                    // delayCall: open the prompt from an editor tick of its own
+                    // rather than from inside the focus event.
                     int pendingCount = pending.Count;
                     int outdatedCount = outdated;
-                    EditorApplication.delayCall += () => PromptPull(pendingCount, outdatedCount);
+                    EditorApplication.delayCall += () => PromptPull(stamp, pendingCount, outdatedCount);
                     break;
                 default:
-                    Debug.LogWarning("UniLFS: " + Describe(pending.Count, outdated) + ". Open Window > UniLFS and press Pull. "
-                        + "(CI: Unity -batchmode -quit -executeMethod UniLFS.Editor.UniLfsCli.Pull)");
+                    SessionState.SetString(HandledPullStampKey, stamp);
+                    WarnPullNeeded(pending.Count, outdated);
                     break;
             }
         }
 
-        static void PromptPull(int pending, int outdated)
+        /// <summary>
+        /// Asks whether to pull, from a window that does not stop the editor
+        /// while it waits. The manifest version is recorded as handled when the
+        /// answer arrives - not before - so a prompt that never gets one (the
+        /// editor is busy, a domain reload took the window with it) leaves the
+        /// check to run again rather than swallowing it for the session.
+        /// </summary>
+        static void PromptPull(string stamp, int pending, int outdated)
         {
+            // Something started between the check and this tick. Say nothing
+            // and record nothing: the next focus change asks again.
             if (_running || UniLfsOperationLock.IsBusy) return;
-            bool pull = EditorUtility.DisplayDialog("UniLFS",
+            if (UniLfsPrompt.IsOpen) return;
+
+            if (UniLfsPrompt.Suppressed)
+            {
+                SessionState.SetString(HandledPullStampKey, stamp);
+                WarnPullNeeded(pending, outdated);
+                return;
+            }
+
+            UniLfsPrompt.Ask("UniLFS",
                 Describe(pending, outdated) + " - the UniLFS manifest changed, e.g. after a git pull.\n\nDownload them now?",
-                "Pull", "Later");
-            if (pull)
-                RunPull();
-            else
-                Debug.LogWarning("UniLFS: skipped pulling " + pending + " file(s). Use Window > UniLFS > Pull when ready.");
+                "Pull", "Later", null,
+                choice =>
+                {
+                    SessionState.SetString(HandledPullStampKey, stamp);
+                    if (choice == 0)
+                        RunPull();
+                    else
+                        Debug.LogWarning("UniLFS: skipped pulling " + pending + " file(s). Use Window > UniLFS > Pull when ready.");
+                });
+        }
+
+        /// <summary>What Auto Pull says when it is not going to ask: Off mode, and prompts turned off.</summary>
+        static void WarnPullNeeded(int pending, int outdated)
+        {
+            Debug.LogWarning("UniLFS: " + Describe(pending, outdated) + ". Open Window > UniLFS and press Pull. "
+                + "(CI: Unity -batchmode -quit -executeMethod UniLFS.Editor.UniLfsCli.Pull)");
         }
 
         static string Describe(int pending, int outdated)
@@ -260,6 +320,9 @@ namespace UniLFS.Editor
         static async Task CheckPushAsync(bool focused, bool fromImport)
         {
             if (_running || UniLfsOperationLock.IsBusy || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            // A prompt is already waiting for an answer - including Auto Pull's,
+            // which asks about the same files from the other direction.
+            if (UniLfsPrompt.IsOpen) return;
             // Staging counts as something to push: a file tracked but never
             // uploaded is exactly what Auto Push is for, and before its first
             // Push there is no manifest for it to appear in.
@@ -302,29 +365,47 @@ namespace UniLFS.Editor
             foreach (var m in modified) sb.Append(m.File.path).Append(':').Append(m.CurrentHash).Append(';');
             string state = sb.ToString();
             if (SessionState.GetString(HandledPushStateKey, "") == state) return;
-            SessionState.SetString(HandledPushStateKey, state);
 
             if (mode == UniLfsAutoPushMode.Auto)
             {
+                SessionState.SetString(HandledPushStateKey, state);
                 RunPush();
             }
             else
             {
                 int modifiedCount = modified.Count;
-                EditorApplication.delayCall += () => PromptPush(modifiedCount);
+                EditorApplication.delayCall += () => PromptPush(state, modifiedCount);
             }
         }
 
-        static void PromptPush(int modified)
+        /// <summary>
+        /// The push half of <see cref="PromptPull"/>, and it records the state
+        /// it asked about on the same terms: when the answer arrives.
+        /// </summary>
+        static void PromptPush(string state, int modified)
         {
             if (_running || UniLfsOperationLock.IsBusy) return;
-            bool push = EditorUtility.DisplayDialog("UniLFS",
+            if (UniLfsPrompt.IsOpen) return;
+
+            if (UniLfsPrompt.Suppressed)
+            {
+                SessionState.SetString(HandledPushStateKey, state);
+                Debug.LogWarning("UniLFS: " + modified + " tracked file(s) have local changes that are not uploaded yet. "
+                    + "Use Window > UniLFS > Push before you commit unilfs.manifest.json.");
+                return;
+            }
+
+            UniLfsPrompt.Ask("UniLFS",
                 modified + " tracked file(s) have local changes that are not uploaded yet.\n\nPush them now? (Do this before committing unilfs.manifest.json.)",
-                "Push", "Later");
-            if (push)
-                RunPush();
-            else
-                Debug.LogWarning("UniLFS: skipped pushing " + modified + " modified file(s). Use Window > UniLFS > Push before you commit the manifest.");
+                "Push", "Later", null,
+                choice =>
+                {
+                    SessionState.SetString(HandledPushStateKey, state);
+                    if (choice == 0)
+                        RunPush();
+                    else
+                        Debug.LogWarning("UniLFS: skipped pushing " + modified + " modified file(s). Use Window > UniLFS > Push before you commit the manifest.");
+                });
         }
 
         static async void RunPush()

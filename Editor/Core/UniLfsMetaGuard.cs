@@ -22,11 +22,17 @@ namespace UniLFS.Editor
     /// discarded the orphaned .meta by the time it runs. So the order below is
     /// what makes it work, not the timing:
     ///
-    /// 1. Recreate a missing .meta from the GUID recorded in the manifest. This
-    ///    is what actually saves references. The recreated file carries the GUID
-    ///    but not the original import settings, so a .meta restored from git is
-    ///    always the better outcome - hence the warning when this happens.
-    /// 2. Write a placeholder at the asset path, so the .meta stops being an
+    /// 1. Ask git for the .meta files it has and the working tree does not
+    ///    (<see cref="UniLfsGitRestore"/>). The .meta is a committed file, so on
+    ///    a fresh clone the one Unity just deleted is still in the index — import
+    ///    settings and all. Getting it back is both the right GUID and the right
+    ///    settings, and it leaves the working tree clean.
+    /// 2. Recreate whatever is still missing from the GUID recorded in the
+    ///    manifest. This is what actually saves references when git cannot help
+    ///    (no git, a .meta never committed). The recreated file carries the GUID
+    ///    but not the original import settings - hence the warning when this
+    ///    happens, where step 1 only logs.
+    /// 3. Write a placeholder at the asset path, so the .meta stops being an
     ///    orphan. Without it every later refresh discards the .meta again; with
     ///    it the entry is stable until Pull overwrites the placeholder with real
     ///    content, under the same GUID.
@@ -41,7 +47,10 @@ namespace UniLFS.Editor
         internal class GuardReport
         {
             public int PlaceholdersWritten;
-            public int MetaFilesRestored;
+            /// <summary>.meta files git handed back, with their import settings.</summary>
+            public int MetaFilesRestoredFromGit;
+            /// <summary>.meta files rebuilt from the manifest GUID, losing their import settings.</summary>
+            public int MetaFilesRebuilt;
             public List<string> MetaMissingNoGuid = new List<string>();
             public List<string> GuidDrift = new List<string>();
             /// <summary>Manifest entries refused because they do not name a path inside the project.</summary>
@@ -85,6 +94,11 @@ namespace UniLFS.Editor
                 return report;
             }
 
+            // Two passes, because the .meta files come back in one git call
+            // rather than one per entry: a project tracking hundreds of files
+            // would otherwise launch hundreds of processes at editor start.
+            var guarded = new List<Guarded>();
+            var lostMetaPaths = new List<string>();
             foreach (var f in manifest.files)
             {
                 string abs = UniLfsPaths.ToAbsolute(f.path);
@@ -103,27 +117,49 @@ namespace UniLFS.Editor
                     continue;
                 }
 
-                string metaPath = UniLfsMetaFile.PathFor(abs);
+                var entry = new Guarded
+                {
+                    Entry = f,
+                    Abs = abs,
+                    MetaPath = UniLfsMetaFile.PathFor(abs),
+                    // Real content is here: nothing to protect.
+                    ContentPresent = File.Exists(abs) && !UniLfsPlaceholder.IsPlaceholder(abs),
+                };
+                guarded.Add(entry);
+
+                if (!entry.ContentPresent && !File.Exists(entry.MetaPath))
+                    lostMetaPaths.Add(UniLfsMetaFile.PathFor(f.path));
+            }
+
+            // Before anything is rebuilt: WriteMinimal no-ops on a .meta that
+            // exists, so whatever git hands back wins, which is the point - it
+            // is the file the rest of the project was authored against.
+            report.MetaFilesRestoredFromGit =
+                UniLfsGitRestore.Restore(UniLfsPaths.ProjectRoot, lostMetaPaths).Count;
+
+            foreach (var entry in guarded)
+            {
+                var f = entry.Entry;
 
                 // Checked before anything branches on whether the content is
                 // here: a tracked file that is missing *and* whose .meta already
                 // carries the wrong GUID is exactly the damage this is meant to
                 // surface, and nothing downstream would. Pull's WriteMinimal
                 // no-ops on an existing .meta, so the asset would come back
-                // under that wrong GUID in silence.
-                string onDisk = UniLfsMetaFile.ReadGuid(metaPath);
+                // under that wrong GUID in silence. Read after the restore, so
+                // a .meta git just brought back is the one being judged.
+                string onDisk = UniLfsMetaFile.ReadGuid(entry.MetaPath);
                 if (UniLfsMetaFile.IsValidGuid(f.guid) && onDisk != null && onDisk != f.guid)
                     report.GuidDrift.Add(f.path);
 
-                // Real content is here: nothing to protect.
-                if (File.Exists(abs) && !UniLfsPlaceholder.IsPlaceholder(abs)) continue;
+                if (entry.ContentPresent) continue;
 
-                if (!File.Exists(metaPath))
+                if (!File.Exists(entry.MetaPath))
                 {
                     if (UniLfsMetaFile.IsValidGuid(f.guid))
                     {
-                        if (UniLfsMetaFile.WriteMinimal(metaPath, f.guid))
-                            report.MetaFilesRestored++;
+                        if (UniLfsMetaFile.WriteMinimal(entry.MetaPath, f.guid))
+                            report.MetaFilesRebuilt++;
                     }
                     else
                     {
@@ -135,11 +171,20 @@ namespace UniLFS.Editor
                     }
                 }
 
-                if (!File.Exists(abs) && UniLfsPlaceholder.Write(abs, f.hash, f.size))
+                if (!File.Exists(entry.Abs) && UniLfsPlaceholder.Write(entry.Abs, f.hash, f.size))
                     report.PlaceholdersWritten++;
             }
 
             return report;
+        }
+
+        /// <summary>A manifest entry that named a path inside the project, with what the first pass already looked up.</summary>
+        class Guarded
+        {
+            public UniLfsManifestFile Entry;
+            public string Abs;
+            public string MetaPath;
+            public bool ContentPresent;
         }
 
         static void LogReport(GuardReport report)
@@ -152,13 +197,25 @@ namespace UniLFS.Editor
                     + " Import errors for these paths until then are expected.");
             }
 
-            if (report.MetaFilesRestored > 0)
+            if (report.MetaFilesRestoredFromGit > 0)
+            {
+                // A log line rather than a warning: nothing was lost. Unity
+                // discarded them, git had them, they are back as they were
+                // committed - import settings included - and the working tree
+                // is clean again.
+                Debug.Log("UniLFS: Unity had discarded the .meta file of " + report.MetaFilesRestoredFromGit
+                    + " tracked file(s); they were restored from git, with their import settings, so nothing"
+                    + " needs re-setting and the working tree is unchanged.");
+            }
+
+            if (report.MetaFilesRebuilt > 0)
             {
                 // Worth a warning rather than a log line: the GUID is back, so
                 // references resolve, but whatever import settings the .meta
                 // carried are gone and only git still has them.
                 Debug.LogWarning("UniLFS: Unity had already discarded the .meta file of "
-                    + report.MetaFilesRestored + " tracked file(s); they were rebuilt from the GUIDs in the"
+                    + report.MetaFilesRebuilt + " tracked file(s), and git could not hand them back (no git on"
+                    + " PATH, or they were never committed); they were rebuilt from the GUIDs in the"
                     + " manifest, so references still resolve. Import settings were not part of that and are"
                     + " back to their defaults - restore those .meta files from git (git checkout -- <path>.meta)"
                     + " if they had any.");

@@ -5,6 +5,17 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-09-04
+
+### Fixed
+
+- **Auto Pull and Auto Push no longer take the editor hostage while they wait for an answer.** In **Ask** mode — the default — both opened `EditorUtility.DisplayDialog` from editor startup, and a modal dialog stops the main thread until somebody clicks a button. The only guard was `Application.isBatchMode`, which a GUI editor driven by an automation harness (a Unity MCP server, a CLI-driven editor loop, a remote runner) does not trip: the first launch after a teammate pushed hung indefinitely, and the log said nothing at all about why. The same questions are now asked from a floating window that never blocks the main thread; closing it counts as **Later**, so the Console records the outcome either way and "nobody answered" is no longer indistinguishable from "answered Later". The setup reminder (**Sign in with Google** / **Open Settings** / **Don't ask again**) moved with them — it opened the same kind of dialog on the first launch of a fresh clone.
+- **A check that never ran no longer counts as one that did.** Auto Pull marked the manifest version handled *before* running its status check, so two exits that decided nothing hid it for the rest of the editor session: a status check that threw, and a prompt that arrived while another operation held the lock — the latter returning without a single Console line, which in the log is indistinguishable from a dialog nobody answered. Only the "busy" path handed the stamp back. Both Auto Pull and Auto Push now record what they asked about when the answer arrives, so anything ending without one — a failed check, a busy editor, a domain reload that took the window with it — is retried on the next focus change. The "could not check tracked files" warning is written once per manifest version rather than once per retry.
+
+### Added
+
+- **`UNILFS_NO_PROMPTS=1`** stops UniLFS opening prompts on this machine at all: **Ask** writes the Console line **Off** writes, and nothing waits for an answer. For editors that are driven rather than watched — Auto Pull and Auto Push live in committed project settings, so turning them off has always been a decision for the whole team and never one the single unattended machine could make for itself.
+
 ## [0.5.1] - 2026-08-21
 
 ### Fixed

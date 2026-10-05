@@ -81,6 +81,23 @@ namespace UniLFS.Editor
         /// leave them alone.
         /// </summary>
         public bool BaselineKnown;
+
+        /// <summary>
+        /// Whether storage has content for this entry that the disk does not:
+        /// missing or outdated, and named by the manifest. A staged path that
+        /// is gone from disk reads as <see cref="UniLfsFileState.MissingLocal"/>
+        /// too, but it has no manifest entry and so no blob — handing it to Pull
+        /// asked storage for a blob named "" and failed every run, since
+        /// nothing a later Pull does can change that answer.
+        /// </summary>
+        public bool NeedsDownload
+        {
+            get
+            {
+                return (State == UniLfsFileState.MissingLocal || State == UniLfsFileState.Outdated)
+                    && !string.IsNullOrEmpty(File.hash);
+            }
+        }
     }
 
     /// <summary>

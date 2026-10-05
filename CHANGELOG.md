@@ -5,6 +5,12 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-10-06
+
+### Fixed
+
+- **Pull no longer fails on a staged file that was deleted before its first push.** Such a file has no manifest entry and no blob, and the window already says there is nothing to download it from, but Pull and Auto Pull counted it as missing like any manifest file and asked storage for a blob named `""`. On Google Drive that ended in "Index and length must refer to a location within the string" from building the not-found message; any provider would have failed it. Because nothing a later Pull does can change that answer, every Pull and every Auto Pull check reported the same error until the file was restored or untracked. Both now download only what the manifest names. The file stays staged and keeps reading as missing, as before. (#13)
+
 ## [0.5.3] - 2026-09-04
 
 ### Fixed

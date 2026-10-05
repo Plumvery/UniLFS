@@ -227,6 +227,35 @@ namespace UniLFS.Editor.Tests
                 "still tracked here: Push failing to find the file is not a decision to stop");
         }
 
+        /// <summary>
+        /// The same deleted staged file, seen by Pull. It reads as missing like
+        /// any manifest file would, but there is no blob behind it, so Pull has
+        /// to leave it alone — asking storage for it failed every Pull and every
+        /// Auto Pull from then on. The manifest has to name some other file for
+        /// this to happen at all: Pull returns before looking at anything when
+        /// the manifest is empty.
+        /// </summary>
+        [Test]
+        public void PullLeavesAStagedFileDeletedBeforeItsFirstPushAlone()
+        {
+            WriteAsset(_a, SecondAsset, "pushed and fine");
+            AssertNoErrors(Track(_a, SecondAsset));
+            AssertNoErrors(Push(_a));
+
+            WriteAsset(_a, Asset, "gone before it left");
+            AssertNoErrors(Track(_a, Asset));
+            DeleteAsset(_a, Asset);
+            Assert.AreEqual(UniLfsFileState.MissingLocal, State(_a, Asset));
+
+            var pulled = Pull(_a);
+            AssertNoErrors(pulled);
+            Assert.AreEqual(0, pulled.Downloaded);
+            Assert.IsFalse(File.Exists(_a.Abs(Asset)), "there was nothing to download it from");
+            Assert.AreEqual("pushed and fine", ReadAsset(_a, SecondAsset));
+            CollectionAssert.AreEqual(new[] { Asset }, StagedPaths(_a), "still tracked here, still waiting for its file");
+            Assert.IsFalse(Statuses(_a).Find(s => s.File.path == Asset).NeedsDownload);
+        }
+
         // ----- identity: the two clones disagree about a .meta -----
 
         /// <summary>

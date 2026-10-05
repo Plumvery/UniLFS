@@ -799,7 +799,8 @@ namespace UniLFS.Editor
             var result = new UniLfsOpResult();
             // Staged paths are not in the manifest, so there is nothing to
             // download for them - being invisible to everyone else, this clone
-            // included, is what staged means.
+            // included, is what staged means. This early return covers an empty
+            // manifest; NeedsDownload below is what keeps them out otherwise.
             if (manifest.files.Count == 0) return result;
             var reporter = new UniLfsProgressReporter(progress);
             var remote = UniLfsRemoteBlobCache.Load(settings);
@@ -808,13 +809,13 @@ namespace UniLFS.Editor
             {
                 var statuses = await StatusInternalAsync(manifest, staged, cache, remote, reporter, 0f, PullStatusSpan, ct).ConfigureAwait(false);
                 var targets = statuses.Where(s =>
-                    s.State == UniLfsFileState.MissingLocal ||
-                    // The manifest moved on and this copy is exactly the one
-                    // this machine last synced, so replacing it loses nothing.
-                    // Without this, a teammate updating an already-tracked file
-                    // reached nobody: the file was on disk, so it never counted
-                    // as missing, and Pull downloaded only missing files.
-                    s.State == UniLfsFileState.Outdated ||
+                    // Missing, or Outdated: the manifest moved on and this copy
+                    // is exactly the one this machine last synced, so replacing
+                    // it loses nothing. Without Outdated, a teammate updating an
+                    // already-tracked file reached nobody: the file was on disk,
+                    // so it never counted as missing, and Pull downloaded only
+                    // missing files.
+                    s.NeedsDownload ||
                     (restoreModified && (s.State == UniLfsFileState.Modified || s.State == UniLfsFileState.Conflicted))).ToList();
                 foreach (var s in statuses)
                 {

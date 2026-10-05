@@ -192,8 +192,9 @@ namespace UniLFS.Editor
 
             // Missing (including placeholders the meta guard stood in) and
             // outdated are both "storage has content this project does not".
-            var pending = statuses.FindAll(s =>
-                s.State == UniLfsFileState.MissingLocal || s.State == UniLfsFileState.Outdated);
+            // A staged file gone from disk is missing too, but storage has
+            // nothing for it, and counting it would ask again on every check.
+            var pending = statuses.FindAll(s => s.NeedsDownload);
             if (pending.Count == 0)
             {
                 // Nothing to download is an outcome like any other: this

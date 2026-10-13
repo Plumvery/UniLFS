@@ -21,8 +21,11 @@ namespace UniLFS.Editor
         bool _working;
         string _newFolderName = "UniLFS";
 
-        UniLfsTrackPatterns _patterns;
+        UniLfsPatternSummary _patterns;
+        string _patternsError;
         string _patternsStamp;
+        string _runtimeMessage;
+        MessageType _runtimeType = MessageType.Info;
 
         // Text fields write straight into the in-memory settings objects, but
         // persisting is deferred until the field loses focus. Saving per
@@ -86,13 +89,18 @@ namespace UniLFS.Editor
 
                 DrawStorageSelection();
                 EditorGUILayout.Space(4);
-                if (_settings.ProviderKind == UniLfsProviderKind.S3Compatible) DrawS3(); else DrawGoogleDrive();
+                if (_settings.ProviderKind == UniLfsProviderKind.GoogleDrive) DrawGoogleDrive();
+                else if (_settings.ProviderKind == UniLfsProviderKind.Local) DrawLocal();
+                else DrawS3();
 
                 EditorGUILayout.Space(12);
                 DrawConnectionTest();
 
                 EditorGUILayout.Space(12);
                 DrawTrackedPatterns();
+
+                EditorGUILayout.Space(12);
+                DrawRuntime();
             }
             finally
             {
@@ -108,12 +116,14 @@ namespace UniLFS.Editor
             EditorGUILayout.LabelField("Storage", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
-            int providerIndex = _settings.ProviderKind == UniLfsProviderKind.GoogleDrive ? 1 : 0;
+            int providerIndex = (int)_settings.ProviderKind;
             providerIndex = EditorGUILayout.Popup(
                 new GUIContent("Provider", "Where tracked files are uploaded to. Changing this does not move blobs already uploaded to the other provider."),
                 providerIndex,
-                new[] { "S3 compatible (R2 / S3 / MinIO)", "Google Drive" });
-            _settings.provider = providerIndex == 1 ? UniLfsSettings.ProviderGoogleDrive : UniLfsSettings.ProviderS3;
+                new[] { "S3 compatible (R2 / S3 / MinIO)", "Google Drive", "Local folder (NAS / shared drive)" });
+            _settings.provider = providerIndex == 1 ? UniLfsSettings.ProviderGoogleDrive
+                : providerIndex == 2 ? UniLfsSettings.ProviderLocal
+                : UniLfsSettings.ProviderS3;
 
             _settings.parallelTransfers = EditorGUILayout.IntSlider(
                 new GUIContent("Parallel Transfers", "How many files upload or download at the same time"),
@@ -232,6 +242,67 @@ namespace UniLFS.Editor
             WarnIfIncomplete();
         }
 
+        void DrawLocal()
+        {
+            EditorGUILayout.LabelField("Local folder", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "Blobs are stored as <folder>/objects/<aa>/<sha256> - a NAS share, a synced folder or an external disk. "
+                + "The path is a project setting (committed), so use one every teammate can reach, e.g. a mapped drive or mount point. "
+                + "Relative paths are taken from the project root.",
+                MessageType.Info);
+            EditorGUI.BeginChangeCheck();
+            _settings.localPath = EditorGUILayout.DelayedTextField(new GUIContent("Folder", "Where blobs are stored"), _settings.localPath);
+            if (EditorGUI.EndChangeCheck()) _settings.Save();
+            using (FieldColumn.Open())
+            {
+                if (GUILayout.Button("Browse...", GUILayout.Width(90)))
+                {
+                    string picked = EditorUtility.OpenFolderPanel("UniLFS storage folder", _settings.localPath, "");
+                    if (!string.IsNullOrEmpty(picked))
+                    {
+                        _settings.localPath = picked;
+                        _settings.Save();
+                    }
+                }
+            }
+            WarnIfIncomplete();
+        }
+
+        /// <summary>
+        /// The Node.js and mylfs this machine runs every operation with. Both
+        /// are found on their own; the fields are for machines where they are
+        /// not, and are stored per-user.
+        /// </summary>
+        void DrawRuntime()
+        {
+            EditorGUILayout.LabelField("Node.js / mylfs (per-user, not committed)", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "UniLFS runs every operation through mylfs, a Node.js tool bundled with this package (Node.js "
+                + "18 or later required). Leave the fields empty to use the bundled mylfs and find Node.js on PATH or in the usual install locations.",
+                MessageType.Info);
+            _user.nodePath = UserField("unilfs.runtime.node", new GUIContent("Node.js", "Path to the node executable. Empty: search for it."), _user.nodePath, false);
+            _user.mylfsPath = UserField("unilfs.runtime.mylfs", new GUIContent("mylfs", "A mylfs checkout or its bin/mylfs.js. Empty: the copy bundled with UniLFS."), _user.mylfsPath, false);
+            using (FieldColumn.Open())
+            {
+                if (GUILayout.Button("Check", GUILayout.Width(90)))
+                {
+                    FlushPendingCommit();
+                    try
+                    {
+                        _runtimeMessage = UniLfsMylfs.Check(_user);
+                        _runtimeType = MessageType.Info;
+                    }
+                    catch (Exception e)
+                    {
+                        _runtimeMessage = e.Message;
+                        _runtimeType = MessageType.Error;
+                    }
+                }
+            }
+            if (!string.IsNullOrEmpty(_runtimeMessage))
+                EditorGUILayout.HelpBox(_runtimeMessage, _runtimeType);
+        }
+
         void DrawConnectionTest()
         {
             using (new EditorGUI.DisabledScope(_working))
@@ -264,11 +335,17 @@ namespace UniLFS.Editor
                 MessageType.Info);
 
             bool exists = File.Exists(UniLfsPaths.TrackPath);
-            EditorGUILayout.LabelField("Patterns",
-                exists ? _patterns.Count + " in effect" : "no " + UniLfsPaths.TrackFileName + " in this project yet");
-            if (_patterns.Errors.Count > 0)
+            string summary;
+            if (!exists) summary = "no " + UniLfsPaths.TrackFileName + " in this project yet";
+            else if (_patternsError != null) summary = "could not be read";
+            else if (_patterns == null) summary = "checking...";
+            else summary = _patterns.count + " in effect";
+            EditorGUILayout.LabelField("Patterns", summary);
+            if (exists && _patternsError != null)
+                EditorGUILayout.HelpBox(_patternsError, MessageType.Warning);
+            if (exists && _patterns != null && _patterns.errors.Count > 0)
                 EditorGUILayout.HelpBox("Lines UniLFS could not read (they match nothing):\n- "
-                    + string.Join("\n- ", _patterns.Errors.ToArray()), MessageType.Warning);
+                    + string.Join("\n- ", _patterns.errors.ToArray()), MessageType.Warning);
 
             EditorGUI.BeginChangeCheck();
             _settings.autoTrack = EditorGUILayout.Toggle(
@@ -294,9 +371,26 @@ namespace UniLFS.Editor
         {
             var info = new FileInfo(UniLfsPaths.TrackPath);
             string stamp = info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : "";
-            if (_patterns != null && _patternsStamp == stamp) return;
+            if (_patternsStamp == stamp) return;
             _patternsStamp = stamp;
-            _patterns = UniLfsTrackPatterns.Load(UniLfsPaths.TrackPath);
+            _patterns = null;
+            _patternsError = null;
+            if (info.Exists) LoadPatterns(stamp);
+        }
+
+        /// <summary>mylfs reads the file, so the count and errors shown are the ones Track Matching acts on.</summary>
+        async void LoadPatterns(string stamp)
+        {
+            try
+            {
+                var summary = await UniLfsCore.ReadPatternsAsync();
+                if (_patternsStamp == stamp) _patterns = summary;
+            }
+            catch (Exception e)
+            {
+                if (_patternsStamp == stamp) _patternsError = e.Message;
+            }
+            RepaintSettings();
         }
 
         /// <summary>Lists what still has to be filled in before Push/Pull can work.</summary>
@@ -383,13 +477,11 @@ namespace UniLFS.Editor
             RepaintSettings();
             try
             {
-                string clientId = UniLfsCredentials.DriveClientId(_settings, _user);
-                string clientSecret = UniLfsCredentials.DriveClientSecret(_settings, _user);
-                var tokens = await GoogleOAuth.SignInAsync(clientId, clientSecret, CancellationToken.None);
-                _user.driveRefreshToken = tokens.RefreshToken;
-                _user.driveAccountEmail = tokens.AccountEmail ?? "";
-                _user.Save();
-                SetStatus(GoogleOAuth.DescribeSignIn(_user.driveAccountEmail), MessageType.Info);
+                string email = await UniLfsCore.SignInToGoogleAsync(CancellationToken.None);
+                // mylfs stored the token; take the file back so a later save
+                // from this page does not write the old one over it.
+                _user = UniLfsUserSettings.Load();
+                SetStatus(UniLfsCore.DescribeSignIn(email), MessageType.Info);
             }
             catch (Exception e)
             {
@@ -411,10 +503,7 @@ namespace UniLFS.Editor
             RepaintSettings();
             try
             {
-                string clientId = UniLfsCredentials.DriveClientId(_settings, _user);
-                string clientSecret = UniLfsCredentials.DriveClientSecret(_settings, _user);
-                string refreshToken = UniLfsCredentials.DriveRefreshToken(_user);
-                string id = await GoogleDriveProvider.CreateFolderAsync(clientId, clientSecret, refreshToken, _newFolderName, CancellationToken.None);
+                string id = await UniLfsCore.CreateDriveFolderAsync(_newFolderName, CancellationToken.None);
                 _settings.driveFolderId = id;
                 _settings.Save();
                 SetStatus("Created folder '" + _newFolderName + "' (ID: " + id + ") and saved it to the settings. Share this folder with your teammates.", MessageType.Info);
@@ -440,9 +529,8 @@ namespace UniLFS.Editor
             try
             {
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
-                using (var provider = UniLfsCore.CreateProvider(_settings, _user))
                 {
-                    SetStatus(await provider.TestConnectionAsync(cts.Token), MessageType.Info);
+                    SetStatus(await UniLfsCore.TestConnectionAsync(cts.Token), MessageType.Info);
                 }
             }
             catch (Exception e)

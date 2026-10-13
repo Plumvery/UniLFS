@@ -213,14 +213,11 @@ namespace UniLFS.Editor
         {
             try
             {
-                var tokens = await GoogleOAuth.SignInAsync(
-                    UniLfsCredentials.DriveClientId(_settings, _user),
-                    UniLfsCredentials.DriveClientSecret(_settings, _user),
-                    CancellationToken.None);
-                _user.driveRefreshToken = tokens.RefreshToken;
-                _user.driveAccountEmail = tokens.AccountEmail ?? "";
-                _user.Save();
-                _lastMessage = GoogleOAuth.DescribeSignIn(_user.driveAccountEmail);
+                string email = await UniLfsCore.SignInToGoogleAsync(CancellationToken.None);
+                // mylfs stored the token; take the file back so nothing here
+                // saves the old one over it.
+                _user = UniLfsUserSettings.Load();
+                _lastMessage = UniLfsCore.DescribeSignIn(email);
             }
             catch (Exception e)
             {

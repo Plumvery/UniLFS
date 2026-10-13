@@ -169,7 +169,7 @@ namespace UniLFS.Editor.Tests
 
             Commit(_a, _b);
             CollectionAssert.IsEmpty(TrackedPaths(_b), "the manifest is what says a file is tracked");
-            CollectionAssert.DoesNotContain(UniLfsGitIgnore.ReadManagedLines(_b.GitIgnorePath), "/" + Asset,
+            CollectionAssert.DoesNotContain(CommittedIgnoreLines(_b), "/" + Asset,
                 "and it stops being hidden from git, so the copy on disk can be committed normally");
             _server.ResetCounters();
 

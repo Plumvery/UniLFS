@@ -212,7 +212,7 @@ namespace UniLFS.Editor.Tests
             {
                 merged.Save(ws.ManifestPath);
                 using (UniLfsPaths.OverrideProjectRoot(ws.Root))
-                    UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, merged.files.Select(f => f.path));
+                    UniLfsCore.RefreshIgnoreBlock();
             }
             CopyMetaFiles(one, other);
             CopyMetaFiles(other, one);
@@ -314,13 +314,30 @@ namespace UniLFS.Editor.Tests
         /// <summary>The paths hidden from git by this checkout's own exclude file.</summary>
         protected static List<string> LocallyExcluded(Workspace ws)
         {
-            return UniLfsGitExclude.ReadManagedLines(ws.Root);
+            return ReadBlock(Path.Combine(ws.Root, ".git", "info", "exclude"),
+                "# >>> UniLFS staged files - local to this checkout, never committed >>>", "# <<< UniLFS staged files <<<");
         }
 
         /// <summary>The committed ignore block, which only ever names the manifest's paths.</summary>
         protected static List<string> CommittedIgnoreLines(Workspace ws)
         {
-            return UniLfsGitIgnore.ReadManagedLines(ws.GitIgnorePath);
+            return ReadBlock(ws.GitIgnorePath,
+                "# >>> UniLFS managed block - do not edit by hand >>>", "# <<< UniLFS managed block <<<");
+        }
+
+        /// <summary>The lines between two markers - how mylfs writes both ignore blocks.</summary>
+        protected static List<string> ReadBlock(string file, string begin, string end)
+        {
+            var result = new List<string>();
+            if (!File.Exists(file)) return result;
+            bool inside = false;
+            foreach (var line in File.ReadAllText(file, Encoding.UTF8).Replace("\r\n", "\n").Split('\n'))
+            {
+                if (line.Trim() == begin) { inside = true; continue; }
+                if (line.Trim() == end) inside = false;
+                else if (inside) result.Add(line);
+            }
+            return result;
         }
 
         /// <summary>"Keep mine": the recorded half of resolving a conflict.</summary>

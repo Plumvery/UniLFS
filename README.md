@@ -2,7 +2,7 @@
 
 <img src="Documentation~/images/hero.png" width="830" alt="UniLFS — Big assets. Your storage. Tiny git.">
 
-**Store large Unity assets in your own external storage —<br>Cloudflare R2 / any S3-compatible service / Google Drive — instead of Git LFS.**
+**Store large Unity assets in your own external storage —<br>Cloudflare R2 / any S3-compatible service / Google Drive / a shared folder — instead of Git LFS.**
 
 [![Latest release](https://img.shields.io/github/v/release/Plumvery/UniLFS?label=release&color=ff8a5c)](https://github.com/Plumvery/UniLFS/releases)
 <!-- After openupm/openupm#6715 is merged, switch to the live version badge:
@@ -22,14 +22,15 @@ Git LFS free tiers are tiny (GitHub: 1 GB storage / 1 GB bandwidth per month) an
 
 ## ✨ Features
 
-- **No git-lfs, no CLI tools, no server** — a pure Unity editor package
-- **Bring your own storage** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi (S3 API), or Google Drive
+- **No git-lfs, no server** — a Unity editor package on top of [mylfs](https://github.com/Plumvery/mylfs), which ships inside it (needs Node.js 18+)
+- **Bring your own storage** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi (S3 API), Google Drive, or a local / NAS folder
+- **Same project from a terminal** — mylfs is a standalone CLI, so CI, build servers and teammates without Unity push and pull the very same project
 - **`.meta` files stay in git** — a fresh clone gets them back from git with their import settings, and their GUIDs are recorded in the manifest as a fallback, so a clone never re-imports tracked assets under new ones
 - **Content-addressed & verified** — blobs are stored by SHA-256 and every download is hash-checked
 - **Auto sync** — missing and outdated files are pulled and local changes are pushed without git hooks
 - **Track by pattern** — one committed text file (`unilfs.track`, the `.gitattributes` of this package) says `*.psd` belongs in storage, and new imports are tracked without anyone remembering to
 - **Merge-friendly manifest** — one line per file, sorted, so PRs stay reviewable
-- **CI ready** — batch mode entry points, env-var credentials, and a Unity-free verify gate
+- **CI ready** — mylfs pulls and verifies without a Unity license; batch mode entry points still work
 
 ## 🧭 How it works
 
@@ -71,9 +72,17 @@ remote storage:
 
 </details>
 
+## 🧩 Built on mylfs
+
+UniLFS is the Unity front end of [mylfs](https://github.com/Plumvery/mylfs), a Node.js CLI that does every operation: hashing, the manifest, staging, the ignore blocks, the sync baseline and all storage traffic. This package adds what only Unity can do — the window and settings page, Auto Pull / Push / Track, the asset menu, and keeping `.meta` files and GUIDs intact.
+
+- A pinned copy of mylfs ships inside the package (`Tools~/mylfs`), so there is nothing to install besides **Node.js 18 or later**. UniLFS finds Node on `PATH` and in the usual install locations (Homebrew, nvm, Volta, fnm, the Windows installer, ...); if it does not, set its path in **Project Settings > UniLFS > Node.js / mylfs** and press **Check**.
+- The same project can be driven from a terminal: `npm install -g github:Plumvery/mylfs`, then `mylfs status`, `mylfs pull`, `mylfs push` in the project root. mylfs recognises a Unity project and uses the same settings, credentials and caches as the editor, and the two never run at once (a cross-process lock).
+- To try a newer mylfs without a UniLFS release, point the **mylfs** field (or `UNILFS_MYLFS`) at a checkout.
+
 ## 📦 Install
 
-Requires **Unity 2021.3+**.
+Requires **Unity 2021.3+** and **Node.js 18+**.
 
 **Via [OpenUPM](https://openupm.com/packages/com.plumvery.unilfs/)** — recommended; version updates show up in the Package Manager UI:
 
@@ -202,14 +211,23 @@ Configure the modes in `Edit > Project Settings > UniLFS`. Each detected state i
 | `unilfs.staged.json` | ❌ (auto-gitignored) | paths tracked on this machine and not pushed yet |
 | `ProjectSettings/UniLFSSettings.json` | ✅ | provider, endpoint, bucket, folder ID, ... |
 | `.gitignore` (managed block) | ✅ | the manifest's paths, the credential file, the staging file |
-| `UserSettings/UniLFS.json` | ❌ (auto-gitignored) | access keys, OAuth refresh token |
+| `UserSettings/UniLFS.json` | ❌ (auto-gitignored) | access keys, OAuth refresh token, this machine's Node.js / mylfs paths |
 
 Environment variables override everything (useful for CI):
-`UNILFS_S3_ACCESS_KEY_ID`, `UNILFS_S3_SECRET_ACCESS_KEY`, `UNILFS_DRIVE_CLIENT_ID`, `UNILFS_DRIVE_CLIENT_SECRET`, `UNILFS_DRIVE_REFRESH_TOKEN`.
+`UNILFS_S3_ACCESS_KEY_ID`, `UNILFS_S3_SECRET_ACCESS_KEY`, `UNILFS_DRIVE_CLIENT_ID`, `UNILFS_DRIVE_CLIENT_SECRET`, `UNILFS_DRIVE_REFRESH_TOKEN`; `UNILFS_NODE` / `UNILFS_MYLFS` pick the Node.js and mylfs to run.
 
 Credentials are stored in plain text in `UserSettings/UniLFS.json` (like `~/.aws/credentials`). UniLFS force-includes that file in its `.gitignore` block, but treat the file like any other secret.
 
 ## 🤖 CI
+
+No Unity license needed — mylfs pulls (or verifies) straight from a checkout:
+
+```sh
+npm install -g github:Plumvery/mylfs
+mylfs pull      # or: mylfs verify
+```
+
+The batch mode entry points still work, for builds that run Unity anyway:
 
 ```sh
 Unity -batchmode -nographics -quit -projectPath . \
@@ -228,7 +246,8 @@ The manifest is sorted with one line per file, so two people tracking *different
 - No garbage collection of old blobs yet (storage is cheap; `prune` is on the roadmap)
 - Single-request uploads: ~5 GB per-object limit on R2/S3
 - Google Drive is best for solo/small-team use — see the rate-limit and quota notes in its guide
-- Editor-only: files must be pulled before building (that is what the CI entry point is for)
+- Files must be pulled before building (`mylfs pull` in CI, or the batch mode entry point)
+- Needs Node.js 18+ on every machine that opens the project
 
 ## 🗺️ Roadmap
 

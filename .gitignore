@@ -17,3 +17,6 @@ Desktop.ini
 
 # Python
 __pycache__/
+
+# A Node.js binary CI drops in for the EditMode tests (see .github/workflows/ci.yml).
+/Tools~/node/

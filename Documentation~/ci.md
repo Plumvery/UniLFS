@@ -2,6 +2,24 @@
 
 Builds need the real files on disk, so run a UniLFS **Pull** after checkout and before the build step.
 
+## Without Unity: mylfs
+
+UniLFS runs every operation through [mylfs](https://github.com/Plumvery/mylfs), and mylfs works on its own. In CI that is the cheapest route — no Unity license, no editor start-up:
+
+```yaml
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g github:Plumvery/mylfs
+      - run: mylfs pull          # or `mylfs verify` as a merge gate
+        env:
+          UNILFS_S3_ACCESS_KEY_ID: ${{ secrets.UNILFS_S3_ACCESS_KEY_ID }}
+          UNILFS_S3_SECRET_ACCESS_KEY: ${{ secrets.UNILFS_S3_SECRET_ACCESS_KEY }}
+```
+
+mylfs reads `ProjectSettings/UniLFSSettings.json` and the same environment variables as the editor. The Unity entry points below remain for builds that start Unity anyway; they need Node.js on the build machine too (set `UNILFS_NODE` if it is not on `PATH`).
+
 ## Entry points
 
 ```

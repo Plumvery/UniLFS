@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
@@ -100,9 +101,36 @@ namespace UniLFS.Editor
         public static void OpenTrackFile()
         {
             string path = UniLfsPaths.TrackPath;
-            if (UniLfsTrackPatterns.CreateIfMissing(path))
+            if (CreateTrackFileIfMissing(path))
                 Debug.Log("UniLFS: created " + path + ". Commit it - it is how the team agrees on what lives in external storage.");
             EditorUtility.OpenWithDefaultApp(path);
+        }
+
+        /// <summary>
+        /// Written when the file is created, so the first thing anyone opening
+        /// it sees is the syntax. No active pattern: creating the file must not
+        /// start tracking anything by itself.
+        /// </summary>
+        public const string TrackFileTemplate =
+            "# UniLFS: files matching a line below are stored in external storage\n" +
+            "# instead of git. Commit this file - it is how the team agrees on what\n" +
+            "# counts as a large asset. Editing it tracks nothing on its own; use\n" +
+            "# Window > UniLFS > Track Matching (or let Auto Track catch new imports).\n" +
+            "#\n" +
+            "#   *.psd             no slash: matched against the file name, at any depth\n" +
+            "#   Assets/Movies/    trailing slash: everything under that folder\n" +
+            "#   Assets/**/*.wav   ** crosses folders, * stays inside one name\n" +
+            "#   !Assets/UI/*.psd  ! excludes, and the last matching line wins\n" +
+            "#\n" +
+            "# Case is ignored. .meta files are never tracked.\n";
+
+        static bool CreateTrackFileIfMissing(string path)
+        {
+            if (File.Exists(path)) return false;
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(path, TrackFileTemplate, new UTF8Encoding(false));
+            return true;
         }
 
         static async Task RunTrackAsync(Func<IProgress<UniLfsProgress>, Task<UniLfsOpResult>> operation, Action onDone)

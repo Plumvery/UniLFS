@@ -91,34 +91,28 @@ namespace UniLFS.Editor
         /// Only the paths Unity just handed us are considered; the sweep over
         /// the whole project is Track Matching's job.
         /// </summary>
-        static async Task TrackMatchingImportsAsync(List<string> importedPaths)
+        static async Task TrackMatchingImportsAsync(List<string> importedPaths, int attempt = 0)
         {
             if (importedPaths == null || importedPaths.Count == 0) return;
             if (!UniLfsSettings.Load().autoTrack) return;
             if (!File.Exists(UniLfsPaths.TrackPath)) return;
 
-            var patterns = UniLfsTrackPatterns.Load(UniLfsPaths.TrackPath);
-            if (patterns.IsEmpty) return;
-
-            var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
-            var staged = UniLfsStagedPaths.Load(UniLfsPaths.StagedPath);
+            // mylfs decides which of these unilfs.track matches and which are
+            // already tracked; folders and files a Pull just put back come
+            // through as "nothing to do". Only files go across - imports
+            // include folders, and most of them are not UniLFS's business.
             var matched = new List<string>();
             foreach (var imported in importedPaths)
             {
                 string rel = UniLfsPaths.Normalize(imported);
-                if (!patterns.Matches(rel)) continue;
-                if (staged.Contains(rel) || manifest.Find(rel) != null) continue;
-                // Imports include folders, and a Pull's refresh re-imports files
-                // that were just downloaded - the manifest check above covers
-                // those, this covers everything that is not a file at all.
-                if (!File.Exists(UniLfsPaths.ToAbsolute(rel))) continue;
-                matched.Add(rel);
+                if (rel.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)) continue;
+                if (File.Exists(UniLfsPaths.ToAbsolute(rel))) matched.Add(rel);
             }
             if (matched.Count == 0) return;
 
             try
             {
-                var result = await UniLfsCore.TrackAsync(matched, null, CancellationToken.None);
+                var result = await UniLfsCore.TrackMatchingAsync(matched, null, CancellationToken.None);
                 if (result.TrackedNew > 0)
                     Debug.Log("UniLFS auto track: staged " + result.TrackedNew + " newly imported file(s) matching "
                         + UniLfsPaths.TrackFileName + ". Push uploads them and records them in the manifest.");
@@ -131,11 +125,17 @@ namespace UniLFS.Editor
             }
             catch (UniLfsBusyException)
             {
-                // A Push or Pull the user started holds the lock. Say so rather
-                // than retrying blindly: the import is not coming round again,
-                // and the sweep picks these up whenever it is next run.
-                Debug.LogWarning("UniLFS: " + matched.Count + " newly imported file(s) match " + UniLfsPaths.TrackFileName
-                    + " but another UniLFS operation was running. Use Window > UniLFS > Track Matching when it finishes.");
+                // A Push or Pull holds the lock. The import is not coming
+                // round again, so wait for it to finish and check these then;
+                // only after that keeps failing is it worth a line.
+                if (attempt < 120)
+                {
+                    await Task.Delay(1000);
+                    await TrackMatchingImportsAsync(matched, attempt + 1);
+                    return;
+                }
+                Debug.LogWarning("UniLFS: " + matched.Count + " file(s) were imported while other UniLFS operations kept running, so "
+                    + UniLfsPaths.TrackFileName + " was not checked against them. Use Window > UniLFS > Track Matching.");
             }
             catch (Exception e)
             {

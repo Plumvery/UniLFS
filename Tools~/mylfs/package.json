@@ -1,0 +1,48 @@
+{
+  "name": "mylfs",
+  "version": "0.2.0",
+  "description": "Store large files in your own storage (Cloudflare R2 / S3-compatible / Google Drive / a local folder) instead of Git LFS. Works with any git project and stays file-compatible with the UniLFS Unity package.",
+  "author": {
+    "name": "Plumvery",
+    "url": "https://github.com/Plumvery"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Plumvery/mylfs.git"
+  },
+  "homepage": "https://github.com/Plumvery/mylfs#readme",
+  "bugs": {
+    "url": "https://github.com/Plumvery/mylfs/issues"
+  },
+  "type": "module",
+  "bin": {
+    "mylfs": "bin/mylfs.js"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "keywords": [
+    "git",
+    "lfs",
+    "large-files",
+    "r2",
+    "s3",
+    "google-drive",
+    "unilfs",
+    "mylfs"
+  ],
+  "license": "MIT"
+}

@@ -329,7 +329,7 @@ namespace UniLFS.Editor.Tests
                         // An empty body is legal HTTP but never a blob UniLFS
                         // means to store, so it is refused rather than written
                         // under a hash it does not have.
-                        if (staged == null) bodyHash = UniLfsHasher.Sha256OfString("");
+                        if (staged == null) bodyHash = TestHash.Sha256Hex(new byte[0]);
                         if (!string.Equals(bodyHash, signedPayload, StringComparison.OrdinalIgnoreCase))
                         {
                             Send(stream, 400, "Bad Request", ErrorBody("XAmzContentSHA256Mismatch",
@@ -477,7 +477,7 @@ namespace UniLFS.Editor.Tests
                     dst.Write(buffer, 0, read);
                     remaining -= read;
                 }
-                return UniLfsHasher.ToHex(sha.GetHashAndReset());
+                return TestHash.ToHex(sha.GetHashAndReset());
             }
         }
 

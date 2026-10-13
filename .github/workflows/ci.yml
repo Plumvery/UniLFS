@@ -22,6 +22,13 @@ jobs:
           EOF
       - name: Lint CI verify script
         run: python3 -m py_compile "Documentation~/ci/verify_manifest.py"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bundled mylfs runs and speaks the machine interface
+        run: |
+          node "Tools~/mylfs/bin/mylfs.js" --version
+          node "Tools~/mylfs/bin/mylfs.js" --json version
 
   license-gate:
     # Unity tests need a license. Without the UNITY_LICENSE secret the test job
@@ -49,6 +56,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Every UniLFS operation runs the bundled mylfs, which needs Node.js.
+      # The editor image has none, so a Linux build goes where the package
+      # looks first (Tools~/node, gitignored) - inside the workspace the
+      # test runner mounts into its container.
+      - name: Provide Node.js for the editor
+        run: |
+          mkdir -p "Tools~/node"
+          curl -fsSL https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz \
+            | tar -xJ --strip-components=1 -C "Tools~/node"
+          "Tools~/node/bin/node" --version
       - name: Create wrapper test project
         run: |
           mkdir -p TestProject/Assets TestProject/Packages TestProject/ProjectSettings

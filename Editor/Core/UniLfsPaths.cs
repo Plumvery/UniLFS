@@ -102,8 +102,6 @@ namespace UniLFS.Editor
         /// </summary>
         public const string StagedGitIgnoreLine = "/" + StagedFileName;
         public static string LibraryDir => Combine(ProjectRoot, "Library/UniLFS");
-        public static string StateCachePath => Combine(LibraryDir, "statecache.json");
-        public static string TempDownloadDir => Combine(LibraryDir, "tmp");
 
         public static string Normalize(string path)
         {

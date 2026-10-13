@@ -33,31 +33,6 @@ namespace UniLFS.Editor
         Staged,
     }
 
-    /// <summary>
-    /// Decides what a tracked file's hashes mean by comparing them against the
-    /// baseline — the manifest hash this machine last agreed with, recorded by
-    /// <see cref="UniLfsStateCache"/>.
-    ///
-    /// Local hash and manifest hash alone cannot carry this: "I edited it" and
-    /// "someone else pushed a newer one" both read as local != manifest, and
-    /// they need opposite fixes. The baseline is the third point that says which
-    /// side actually moved, the same way a merge base does.
-    /// </summary>
-    public static class UniLfsThreeWay
-    {
-        public static UniLfsFileState Classify(string localHash, string manifestHash, string baselineHash)
-        {
-            if (localHash == manifestHash) return UniLfsFileState.UpToDate;
-            // No baseline (pre-0.3.3 cache, deleted Library/, never synced here):
-            // the divergence cannot be attributed, so report the reading that
-            // makes every caller leave local content alone.
-            if (string.IsNullOrEmpty(baselineHash)) return UniLfsFileState.Modified;
-            if (localHash == baselineHash) return UniLfsFileState.Outdated;
-            if (manifestHash == baselineHash) return UniLfsFileState.Modified;
-            return UniLfsFileState.Conflicted;
-        }
-    }
-
     public class UniLfsStatusEntry
     {
         public UniLfsManifestFile File;

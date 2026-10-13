@@ -105,21 +105,22 @@ namespace UniLFS.Editor
         /// </summary>
         static string MuteKey()
         {
-            return "UniLFS.SignInPrompt.Muted." + UniLfsHasher.Sha256OfString(Application.dataPath).Substring(0, 16);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var digest = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(Application.dataPath));
+                var hex = new System.Text.StringBuilder();
+                for (int i = 0; i < 8; i++) hex.Append(digest[i].ToString("x2"));
+                return "UniLFS.SignInPrompt.Muted." + hex;
+            }
         }
 
         static async void SignInToGoogleDrive(UniLfsSettings settings, UniLfsUserSettings user)
         {
             try
             {
-                var tokens = await GoogleOAuth.SignInAsync(
-                    UniLfsCredentials.DriveClientId(settings, user),
-                    UniLfsCredentials.DriveClientSecret(settings, user),
-                    CancellationToken.None);
-                user.driveRefreshToken = tokens.RefreshToken;
-                user.driveAccountEmail = tokens.AccountEmail ?? "";
-                user.Save();
-                Debug.Log("UniLFS: " + GoogleOAuth.DescribeSignIn(user.driveAccountEmail));
+                // mylfs stores the token in UserSettings/UniLFS.json itself.
+                string email = await UniLfsCore.SignInToGoogleAsync(CancellationToken.None);
+                Debug.Log("UniLFS: " + UniLfsCore.DescribeSignIn(email));
             }
             catch (Exception e)
             {

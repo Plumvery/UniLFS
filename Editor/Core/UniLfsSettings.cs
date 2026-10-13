@@ -9,6 +9,8 @@ namespace UniLFS.Editor
     {
         S3Compatible,
         GoogleDrive,
+        /// <summary>A plain folder: a NAS share, a synced folder, an external disk.</summary>
+        Local,
     }
 
     public enum UniLfsAutoPullMode
@@ -43,6 +45,7 @@ namespace UniLFS.Editor
     {
         public const string ProviderS3 = "s3";
         public const string ProviderGoogleDrive = "googledrive";
+        public const string ProviderLocal = "local";
 
         public const string AutoPullOff = "off";
         public const string AutoPullAsk = "ask";
@@ -75,11 +78,23 @@ namespace UniLFS.Editor
         public string driveClientId = "";
         public string driveClientSecret = "";
 
+        /// <summary>
+        /// Storage folder for the local provider. Relative paths are taken
+        /// from the project root, so a shared drive letter or mount point works
+        /// best for a team.
+        /// </summary>
+        public string localPath = "";
+
         public int parallelTransfers = 4;
 
         public UniLfsProviderKind ProviderKind
         {
-            get { return provider == ProviderGoogleDrive ? UniLfsProviderKind.GoogleDrive : UniLfsProviderKind.S3Compatible; }
+            get
+            {
+                if (provider == ProviderGoogleDrive) return UniLfsProviderKind.GoogleDrive;
+                if (provider == ProviderLocal) return UniLfsProviderKind.Local;
+                return UniLfsProviderKind.S3Compatible;
+            }
         }
 
         public UniLfsAutoPullMode AutoPullMode
@@ -163,6 +178,18 @@ namespace UniLFS.Editor
         /// </summary>
         public string driveAccountEmail = "";
 
+        /// <summary>
+        /// The Node.js executable that runs mylfs on this machine. Empty: search
+        /// PATH and the usual install locations (see <see cref="UniLfsMylfs"/>).
+        /// </summary>
+        public string nodePath = "";
+
+        /// <summary>
+        /// A mylfs to use instead of the copy bundled with this package - its
+        /// bin/mylfs.js, or the checkout directory. Empty: the bundled one.
+        /// </summary>
+        public string mylfsPath = "";
+
         public static UniLfsUserSettings Load()
         {
             return LoadFrom(UniLfsPaths.UserSettingsFilePath);
@@ -195,10 +222,7 @@ namespace UniLFS.Editor
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             File.WriteAllText(path, JsonUtility.ToJson(this, true) + "\n", new UTF8Encoding(false));
             // Make sure the credential file is ignored even before the first Track.
-            var manifest = UniLfsManifest.Load(UniLfsPaths.ManifestPath);
-            var paths = new System.Collections.Generic.List<string>();
-            foreach (var f in manifest.files) paths.Add(f.path);
-            UniLfsGitIgnore.Update(UniLfsPaths.GitIgnorePath, paths);
+            UniLfsCore.RefreshIgnoreBlock();
         }
     }
 
@@ -222,6 +246,10 @@ namespace UniLFS.Editor
                 if (string.IsNullOrEmpty(UniLfsCredentials.DriveClientSecret(settings, user))) missing.Add("a client secret");
                 if (string.IsNullOrEmpty(settings.driveFolderId)) missing.Add("a folder ID");
                 if (string.IsNullOrEmpty(UniLfsCredentials.DriveRefreshToken(user))) missing.Add("a signed-in Google account");
+            }
+            else if (settings.ProviderKind == UniLfsProviderKind.Local)
+            {
+                if (string.IsNullOrEmpty(settings.localPath)) missing.Add("a storage folder");
             }
             else
             {

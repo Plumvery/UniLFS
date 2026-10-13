@@ -5,6 +5,23 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-13
+
+### Changed
+
+- **UniLFS now runs on [mylfs](https://github.com/Plumvery/mylfs).** Every operation — status, track, push, pull, verify, untrack, keep mine, the connection test and Google sign-in — is carried out by mylfs, a Node.js CLI with the same file formats, rules and storage layout. This package keeps what only the editor can do: the window and settings page, Auto Pull / Push / Track, the asset menu, the `.meta` guard and restoring `.meta` files from git. The public `UniLfsCore` API and the batch mode entry points are unchanged, and the existing two-clone integration tests now run end to end through mylfs against the fake S3 server, which checks every request's SigV4 signature with an independent C# signer.
+- **Requires Node.js 18 or later.** A pinned mylfs ships inside the package (`Tools~/mylfs`). Node is found on `PATH` and in the usual install locations; **Project Settings > UniLFS > Node.js / mylfs** (or `UNILFS_NODE` / `UNILFS_MYLFS`) overrides either, and **Check** reports what will be used.
+- The same project can be operated from a terminal or CI with `mylfs` — no Unity license — and the editor and a terminal can no longer run operations on one checkout at the same time (mylfs holds a cross-process lock).
+- Auto Track hands imported files to mylfs, which decides what `unilfs.track` matches. An import that arrives while another operation runs is checked once it finishes instead of only logging a warning.
+
+### Added
+
+- **Local folder provider** — store blobs in a NAS share, a synced folder or an external disk (`provider: "local"`, `localPath`).
+
+### Removed
+
+- The C# storage providers, SigV4 signer, hashing, state and remote caches, ignore-block writers and pattern matcher, together with their unit tests; mylfs's own test suite covers them.
+
 ## [0.5.4] - 2026-10-06
 
 ### Fixed

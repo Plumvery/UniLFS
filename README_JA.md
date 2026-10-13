@@ -22,14 +22,15 @@ Git LFSの無料枠は小さく（GitHubはストレージ1GB・帯域1GB/月）
 
 ## ✨ 特徴
 
-- **git-lfs不要・CLIツール不要・サーバー不要** — 純粋なUnityエディタパッケージ
-- **ストレージは自分で選ぶ** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi（S3 API）、または Google Drive
+- **git-lfs不要・サーバー不要** — [mylfs](https://github.com/Plumvery/mylfs) の上に載ったUnityエディタパッケージ（mylfsは同梱。Node.js 18以上が必要）
+- **ストレージは自分で選ぶ** — Cloudflare R2 / Amazon S3 / MinIO / Wasabi（S3 API）、Google Drive、またはローカル/NASフォルダ
+- **ターミナルからも同じプロジェクトを操作** — mylfsは単体のCLIなので、CI・ビルドサーバー・Unityを持たないメンバーも同じプロジェクトをpush/pullできる
 - **`.meta`はgitに残る** — クローン直後はgitからimport設定ごと復元し、GUIDは保険としてマニフェストにも記録するので、新しいGUIDで取り込み直されない
 - **コンテンツアドレス方式＋検証付き** — ブロブはSHA-256名で保存し、ダウンロードは必ずハッシュ検証
 - **自動同期** — gitフック無しで、欠けた/古くなったファイルのPullもローカル変更のPushも自動
 - **パターンでTrack** — コミットするテキストファイル1枚（`unilfs.track`。git-lfsの`.gitattributes`にあたるもの）に「`*.psd`はストレージ行き」と書けば、以後インポートされたファイルは誰も覚えていなくても追跡される
 - **マージしやすいマニフェスト** — 1ファイル1行・ソート済みなのでPRがレビューしやすい
-- **CI対応** — バッチモード用エントリポイント、環境変数での認証、Unity不要の検証ゲート
+- **CI対応** — mylfsならUnityライセンス無しでpull/検証できる。バッチモード用エントリポイントも引き続き使える
 
 ## 🧭 仕組み
 
@@ -71,9 +72,17 @@ your-project/
 
 </details>
 
+## 🧩 mylfs との関係
+
+UniLFS は [mylfs](https://github.com/Plumvery/mylfs)（Node.js製CLI）のUnity向けフロントエンドです。ハッシュ計算・マニフェスト・ステージ・ignoreブロック・同期ベースライン・ストレージ通信はすべて mylfs が行い、このパッケージは Unity にしかできない部分 — ウィンドウと設定画面、Auto Pull / Push / Track、アセットメニュー、`.meta` と GUID の保護 — を担当します。
+
+- 固定バージョンの mylfs がパッケージ内（`Tools~/mylfs`）に同梱されているので、別途必要なのは **Node.js 18以上** だけです。Node は `PATH` と一般的なインストール先（Homebrew、nvm、Volta、fnm、Windowsインストーラ等）から自動で探します。見つからない場合は **Project Settings > UniLFS > Node.js / mylfs** でパスを指定し **Check** を押してください。
+- 同じプロジェクトをターミナルからも操作できます: `npm install -g github:Plumvery/mylfs` の後、プロジェクトルートで `mylfs status` / `mylfs pull` / `mylfs push`。mylfs は Unity プロジェクトを認識してエディタと同じ設定・認証情報・キャッシュを使い、プロセス間ロックで同時実行もしません。
+- UniLFS のリリースを待たずに新しい mylfs を試すには、**mylfs** 欄（または `UNILFS_MYLFS`）にチェックアウトを指定します。
+
 ## 📦 インストール
 
-**Unity 2021.3+** が必要です。
+**Unity 2021.3+** と **Node.js 18+** が必要です。
 
 **[OpenUPM](https://openupm.com/packages/com.plumvery.unilfs/) 経由**（推奨。Package Manager UIにバージョン更新が表示されます）:
 
@@ -202,14 +211,23 @@ Assets/Movies/
 | `unilfs.staged.json` | ❌（自動でgitignore） | このマシンで追跡開始し、まだPushしていないパス |
 | `ProjectSettings/UniLFSSettings.json` | ✅ | プロバイダ、エンドポイント、バケット、フォルダIDなど |
 | `.gitignore`（管理ブロック） | ✅ | マニフェスト上のパス、認証ファイル、ステージファイル |
-| `UserSettings/UniLFS.json` | ❌（自動でgitignore） | アクセスキー、OAuthリフレッシュトークン |
+| `UserSettings/UniLFS.json` | ❌（自動でgitignore） | アクセスキー、OAuthリフレッシュトークン、このマシンのNode.js / mylfsのパス |
 
 環境変数が最優先です（CI向け）:
-`UNILFS_S3_ACCESS_KEY_ID`, `UNILFS_S3_SECRET_ACCESS_KEY`, `UNILFS_DRIVE_CLIENT_ID`, `UNILFS_DRIVE_CLIENT_SECRET`, `UNILFS_DRIVE_REFRESH_TOKEN`
+`UNILFS_S3_ACCESS_KEY_ID`, `UNILFS_S3_SECRET_ACCESS_KEY`, `UNILFS_DRIVE_CLIENT_ID`, `UNILFS_DRIVE_CLIENT_SECRET`, `UNILFS_DRIVE_REFRESH_TOKEN`。`UNILFS_NODE` / `UNILFS_MYLFS` で実行する Node.js / mylfs を指定できます。
 
 認証情報は `UserSettings/UniLFS.json` に平文で保存されます（`~/.aws/credentials`と同様の方式）。UniLFSはこのファイルを必ず`.gitignore`ブロックに含めますが、シークレットとして扱ってください。
 
 ## 🤖 CI
+
+Unityライセンス不要 — mylfs でチェックアウトから直接 pull（または検証）できます:
+
+```sh
+npm install -g github:Plumvery/mylfs
+mylfs pull      # または: mylfs verify
+```
+
+どのみちUnityを起動するビルドでは、バッチモード用エントリポイントも使えます:
 
 ```sh
 Unity -batchmode -nographics -quit -projectPath . \
@@ -228,7 +246,8 @@ Unity -batchmode -nographics -quit -projectPath . \
 - 古いブロブのGCは未実装（ストレージは安価。`prune`はロードマップにあり）
 - アップロードは単一リクエスト: R2/S3ではオブジェクトあたり約5GBまで
 - Google Driveは個人〜小規模チーム向き（レート制限・容量の注意はガイド参照）
-- エディタ専用: ビルド前にPullが必要（そのためのCIエントリポイントです）
+- ビルド前にPullが必要（CIでは `mylfs pull` か、バッチモード用エントリポイント）
+- プロジェクトを開くすべてのマシンに Node.js 18以上が必要
 
 ## 🗺️ ロードマップ
 

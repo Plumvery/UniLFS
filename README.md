@@ -104,7 +104,7 @@ openupm add com.plumvery.unilfs
     }
   ],
   "dependencies": {
-    "com.plumvery.unilfs": "0.2.0"
+    "com.plumvery.unilfs": "0.7.0"
   }
 }
 ```
@@ -114,10 +114,10 @@ openupm add com.plumvery.unilfs
 **Via git URL** (needs a git client) — `Window > Package Manager` → `+` → *Add package from git URL*:
 
 ```
-https://github.com/Plumvery/UniLFS.git#v0.2.0
+https://github.com/Plumvery/UniLFS.git#v0.7.0
 ```
 
-Omit the `#v0.2.0` tag to track `main`.
+Omit the `#v0.7.0` tag to track `main`.
 
 ## 🚀 Quick start (Cloudflare R2)
 
@@ -241,7 +241,7 @@ Unity -batchmode -nographics -quit -projectPath . \
 
 The manifest is sorted with one line per file, so two people tracking *different* files merge cleanly. If two people change the *same* file you get a one-line conflict — pick the hash you want and run **Pull** (use **Restore Modified** to overwrite your local copy). Blobs for both versions exist remotely, so nothing is lost either way.
 
-## ⚠️ Limitations (v0.2)
+## ⚠️ Limitations (v0.7)
 
 - No file locking (as with plain git — coordinate who edits shared binaries)
 - No garbage collection of old blobs yet (storage is cheap; `prune` is on the roadmap)

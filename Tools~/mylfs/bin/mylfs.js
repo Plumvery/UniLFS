@@ -13,6 +13,7 @@ import { TrackPatterns } from '../src/patterns.js';
 import { updateGitIgnore } from '../src/ignore.js';
 import * as core from '../src/core.js';
 import { installHooks, uninstallHooks, installedHooks, stageCommittedFiles, manifestsBeingPushed } from '../src/hooks.js';
+import { otherWorktrees } from '../src/local-sources.js';
 import { signIn } from '../src/providers/google-oauth.js';
 import { GoogleDriveProvider } from '../src/providers/gdrive.js';
 import { formatBytes, isAbort, isDir, norm } from '../src/util.js';
@@ -41,7 +42,9 @@ Daily use
                                  (--matching: of the given paths, only those unilfs.track matches)
   untrack <paths...>             Stop tracking (files stay on disk)
   push [--require-baseline]      Upload new/changed files, then record them in the manifest
-  pull [--restore-modified]      Download missing/outdated files
+  pull [--restore-modified] [--no-worktrees]
+                                 Download missing/outdated files (copied from another git worktree
+                                 of this repo when it already has them; --no-worktrees: always download)
   status [--verify]              State of every tracked file (--verify asks storage too)
   verify                         Fail when the manifest names blobs storage does not have
   keep-mine <paths...>           Resolve a conflict in favour of your copy (uploaded by the next push)
@@ -147,6 +150,7 @@ function reportResult(label, r) {
   const parts = [];
   if (r.uploaded) parts.push(`uploaded=${r.uploaded}`);
   if (r.downloaded) parts.push(`downloaded=${r.downloaded}`);
+  if (r.copiedLocal) parts.push(`fromWorktrees=${r.copiedLocal}`);
   if (r.promoted) parts.push(`promoted=${r.promoted}`);
   if (r.trackedNew) parts.push(`staged=${r.trackedNew}`);
   if (r.untracked) parts.push(`untracked=${r.untracked}`);
@@ -391,13 +395,20 @@ async function runHook(project, name, args, signal) {
     // post-checkout's third argument is 1 for a branch checkout, 0 for a file checkout.
     if (name === 'post-checkout' && args[2] === '0') return 0;
     if (Manifest.load(project.manifestPath).files.length === 0) return 0;
+    // A new worktree has no credentials of its own yet, but other worktrees
+    // of the repo may hold every blob: pull what they have, skip the rest.
+    let provider;
     if (missing.length) {
-      err(`mylfs: not pulling - storage is not configured yet (${missing.join(', ')}).`);
-      return 0;
+      if (otherWorktrees(project.root).length === 0) {
+        err(`mylfs: not pulling - storage is not configured yet (${missing.join(', ')}).`);
+        return 0;
+      }
+      const reason = `storage is not configured yet (${missing.join(', ')})`;
+      provider = { downloadBlob: async () => { throw new Error(reason); } };
     }
-    const r = await core.pull(project, { onProgress: makeProgress(quiet), signal });
+    const r = await core.pull(project, { onProgress: makeProgress(quiet), signal, provider });
     finishProgress();
-    if (r.downloaded || r.errors.length || r.conflicted.length || r.keptModified.length) reportResult('Pull', r);
+    if (r.downloaded || r.copiedLocal || r.errors.length || r.conflicted.length || r.keptModified.length) reportResult('Pull', r);
     return 0;
   }
   if (name === 'pre-push') {
@@ -501,7 +512,7 @@ async function runMachine(command, args, opts, signal) {
     case 'push':
       return core.push(project, { requireBaseline: !!opts['require-baseline'], onProgress, signal });
     case 'pull':
-      return core.pull(project, { restoreModified: !!opts['restore-modified'], onProgress, signal });
+      return core.pull(project, { restoreModified: !!opts['restore-modified'], fromWorktrees: !opts['no-worktrees'], onProgress, signal });
     case 'verify':
       return core.verify(project, { onProgress, signal });
     case 'test': {
@@ -645,7 +656,7 @@ async function main(argv) {
     }
     case 'pull': {
       const restore = !!opts['restore-modified'] || process.env.UNILFS_PULL_RESTORE_MODIFIED === '1';
-      const r = await core.pull(project, { restoreModified: restore, onProgress: makeProgress(opts.quiet), signal });
+      const r = await core.pull(project, { restoreModified: restore, fromWorktrees: !opts['no-worktrees'], onProgress: makeProgress(opts.quiet), signal });
       finishProgress();
       reportResult(restore ? 'Restore' : 'Pull', r);
       return r.errors.length ? 1 : 0;

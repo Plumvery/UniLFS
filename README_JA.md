@@ -78,6 +78,7 @@ UniLFS は [mylfs](https://github.com/Plumvery/mylfs)（Node.js製CLI）のUnity
 
 - 固定バージョンの mylfs がパッケージ内（`Tools~/mylfs`）に同梱されているので、別途必要なのは **Node.js 18以上** だけです。Node は `PATH` と一般的なインストール先（Homebrew、nvm、Volta、fnm、Windowsインストーラ等）から自動で探します。見つからない場合は **Project Settings > UniLFS > Node.js / mylfs** でパスを指定し **Check** を押してください。
 - 同じプロジェクトをターミナルからも操作できます: `npm install -g github:Plumvery/mylfs` の後、プロジェクトルートで `mylfs status` / `mylfs pull` / `mylfs push`。mylfs は Unity プロジェクトを認識してエディタと同じ設定・認証情報・キャッシュを使い、プロセス間ロックで同時実行もしません。
+- **git worktree** — `git worktree add` で作ったチェックアウトでは、Pull（と Auto Pull）が同じリポジトリの他の worktree にあるファイルをダウンロードせずにコピーします。コピーはハッシュで検証し、一致しないものはストレージから取ります。他の worktree は読むだけです。コピーで足りる分は、新しい worktree に認証情報が無くても取れます。
 - UniLFS のリリースを待たずに新しい mylfs を試すには、**mylfs** 欄（または `UNILFS_MYLFS`）にチェックアウトを指定します。
 
 ## 📦 インストール

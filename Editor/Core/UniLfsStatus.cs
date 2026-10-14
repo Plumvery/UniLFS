@@ -143,6 +143,11 @@ namespace UniLFS.Editor
     {
         public int Uploaded;
         public int Downloaded;
+        /// <summary>
+        /// Files Pull copied from another git worktree of the same repository
+        /// that already had them (hash-verified) instead of downloading.
+        /// </summary>
+        public int CopiedLocal;
         public int Skipped;
         /// <summary>Files Track staged for their first Push.</summary>
         public int TrackedNew;

@@ -87,6 +87,7 @@ namespace UniLFS.Editor
             if (refreshAssets) AssetDatabase.Refresh();
             Debug.Log("UniLFS CLI: " + label + " finished. uploaded=" + result.Uploaded
                 + " downloaded=" + result.Downloaded
+                + " copiedLocal=" + result.CopiedLocal
                 + " promoted=" + result.Promoted
                 + " upToDate=" + result.Skipped
                 + " missingLocal=" + result.MissingLocal.Count

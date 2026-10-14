@@ -64,7 +64,7 @@ jobs:
           UNILFS_S3_ACCESS_KEY_ID: ${{ secrets.UNILFS_S3_ACCESS_KEY_ID }}
           UNILFS_S3_SECRET_ACCESS_KEY: ${{ secrets.UNILFS_S3_SECRET_ACCESS_KEY }}
         run: |
-          curl -fsSLO https://raw.githubusercontent.com/Plumvery/UniLFS/v0.2.0/Documentation~/ci/verify_manifest.py
+          curl -fsSLO https://raw.githubusercontent.com/Plumvery/UniLFS/v0.7.0/Documentation~/ci/verify_manifest.py
           python3 verify_manifest.py .
 ```
 

@@ -104,7 +104,7 @@ openupm add com.plumvery.unilfs
     }
   ],
   "dependencies": {
-    "com.plumvery.unilfs": "0.2.0"
+    "com.plumvery.unilfs": "0.7.0"
   }
 }
 ```
@@ -114,10 +114,10 @@ openupm add com.plumvery.unilfs
 **git URL経由**（gitクライアントが必要）— `Window > Package Manager` → `+` → *Add package from git URL*:
 
 ```
-https://github.com/Plumvery/UniLFS.git#v0.2.0
+https://github.com/Plumvery/UniLFS.git#v0.7.0
 ```
 
-`#v0.2.0` を省くと `main` 追従になります。
+`#v0.7.0` を省くと `main` 追従になります。
 
 ## 🚀 クイックスタート（Cloudflare R2）
 
@@ -241,7 +241,7 @@ Unity -batchmode -nographics -quit -projectPath . \
 
 マニフェストは1ファイル1行・ソート済みなので、**別々の**ファイルを追跡した2人の変更はきれいにマージされます。**同じ**ファイルを2人が変更した場合は1行のコンフリクトになるので、採用したいハッシュを選んで **Pull**（自分のローカル版を上書きするなら **Restore Modified**）してください。どちらの版のブロブもリモートに存在するので、データが失われることはありません。
 
-## ⚠️ 制限事項（v0.2）
+## ⚠️ 制限事項（v0.7）
 
 - ファイルロック機能なし（素のgitと同じく、バイナリを誰が編集するかはチームで調整）
 - 古いブロブのGCは未実装（ストレージは安価。`prune`はロードマップにあり）

@@ -272,6 +272,11 @@ namespace UniLFS.Editor
             return text;
         }
 
+        static string CopiedNote(UniLfsOpResult result)
+        {
+            return result.CopiedLocal > 0 ? ", copied " + result.CopiedLocal + " from another git worktree" : "";
+        }
+
         static async void RunPull()
         {
             if (_running || UniLfsOperationLock.IsBusy) return;
@@ -283,10 +288,10 @@ namespace UniLFS.Editor
                 Progress.Finish(progressId, result.HasErrors ? Progress.Status.Failed : Progress.Status.Succeeded);
                 AssetDatabase.Refresh();
                 if (result.HasErrors)
-                    Debug.LogError("UniLFS auto pull: downloaded " + result.Downloaded + " file(s), "
+                    Debug.LogError("UniLFS auto pull: downloaded " + result.Downloaded + " file(s)" + CopiedNote(result) + ", "
                         + result.Errors.Count + " error(s):\n- " + string.Join("\n- ", result.Errors));
                 else
-                    Debug.Log("UniLFS auto pull: downloaded " + result.Downloaded + " file(s)"
+                    Debug.Log("UniLFS auto pull: downloaded " + result.Downloaded + " file(s)" + CopiedNote(result)
                         + (result.KeptModified.Count > 0 ? ", kept " + result.KeptModified.Count + " locally modified file(s)" : "")
                         + (result.Conflicted.Count > 0 ? ", left " + result.Conflicted.Count + " conflicting file(s) alone" : "") + ".");
                 if (result.Conflicted.Count > 0)

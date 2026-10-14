@@ -78,6 +78,7 @@ UniLFS is the Unity front end of [mylfs](https://github.com/Plumvery/mylfs), a N
 
 - A pinned copy of mylfs ships inside the package (`Tools~/mylfs`), so there is nothing to install besides **Node.js 18 or later**. UniLFS finds Node on `PATH` and in the usual install locations (Homebrew, nvm, Volta, fnm, the Windows installer, ...); if it does not, set its path in **Project Settings > UniLFS > Node.js / mylfs** and press **Check**.
 - The same project can be driven from a terminal: `npm install -g github:Plumvery/mylfs`, then `mylfs status`, `mylfs pull`, `mylfs push` in the project root. mylfs recognises a Unity project and uses the same settings, credentials and caches as the editor, and the two never run at once (a cross-process lock).
+- **git worktrees** — in a checkout made with `git worktree add`, Pull (and Auto Pull) copies files another worktree of the same repository already has instead of downloading them. Each copy is hash-verified, anything that does not match comes from storage, and the other worktree is only read. A new worktree needs no credentials for what it can copy.
 - To try a newer mylfs without a UniLFS release, point the **mylfs** field (or `UNILFS_MYLFS`) at a checkout.
 
 ## 📦 Install

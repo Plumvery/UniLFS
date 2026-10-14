@@ -5,6 +5,16 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-14
+
+### Added
+
+- **Pull reuses files from other git worktrees.** In a checkout made with `git worktree add`, Pull and Auto Pull copy what another worktree of the same repository (the main checkout included) already has on disk, instead of downloading it again. Each copy is hash-verified while it is made; a file changed over there falls back to storage, and the other worktree is only read. What can be copied needs no credentials, so a fresh worktree fills in before anyone signs in. The window's summary, the Auto Pull log line and `UniLfsCli.Pull` report these as copied; `UniLfsOpResult.CopiedLocal` counts them.
+
+### Changed
+
+- The bundled mylfs is now [0.3.0](https://github.com/Plumvery/mylfs/releases/tag/v0.3.0).
+
 ## [0.6.0] - 2026-10-13
 
 ### Changed

@@ -553,6 +553,7 @@ namespace UniLFS.Editor
             if (r.Uploaded > 0) parts.Add("uploaded " + r.Uploaded);
             if (r.Promoted > 0) parts.Add(r.Promoted + " now in the manifest");
             if (r.Downloaded > 0) parts.Add("downloaded " + r.Downloaded);
+            if (r.CopiedLocal > 0) parts.Add("copied " + r.CopiedLocal + " from another git worktree");
             if (r.Skipped > 0) parts.Add(r.Skipped + " up to date");
             if (r.MissingLocal.Count > 0) parts.Add(r.MissingLocal.Count + " missing locally (not pushed)");
             if (r.KeptModified.Count > 0) parts.Add(r.KeptModified.Count + " locally modified kept (use Restore Modified to overwrite)");

@@ -230,6 +230,7 @@ namespace UniLFS.Editor
         {
             public int uploaded;
             public int downloaded;
+            public int copiedLocal;
             public int skipped;
             public int trackedNew;
             public int promoted;
@@ -254,6 +255,7 @@ namespace UniLFS.Editor
                 {
                     Uploaded = uploaded,
                     Downloaded = downloaded,
+                    CopiedLocal = copiedLocal,
                     Skipped = skipped,
                     TrackedNew = trackedNew,
                     Promoted = promoted,

@@ -9,6 +9,8 @@ import { updateGitIgnore, updateGitExclude, stagedPathsNothingIgnores } from './
 import { isPlaceholder, clearPlaceholder, readMetaGuid, writeMinimalMeta } from './meta.js';
 import { withLock } from './lock.js';
 import { createProvider } from './providers/index.js';
+import { downloadVerified } from './providers/http.js';
+import { LocalSources } from './local-sources.js';
 import { pool, isAbort, throwIfAborted, cmpOrdinal, makeWritable } from './util.js';
 
 export const State = Object.freeze({
@@ -40,6 +42,7 @@ function newResult() {
   return {
     uploaded: 0,
     downloaded: 0,
+    copiedLocal: 0,
     skipped: 0,
     trackedNew: 0,
     promoted: 0,
@@ -593,12 +596,17 @@ async function pushUnlocked(project, requireBaseline, onProgress, signal, provid
  * version and this copy is the one last synced). With restoreModified,
  * locally modified and conflicted files are overwritten too; otherwise they
  * are left alone and reported.
+ *
+ * A blob another git worktree of the same repository already has on disk
+ * is copied from there (hash-verified) instead of downloaded; pass
+ * fromWorktrees: false to always go to storage.
  */
-export async function pull(project, { restoreModified = false, onProgress, signal, provider } = {}) {
-  return withLock(project, restoreModified ? 'Restore' : 'Pull', () => pullUnlocked(project, restoreModified, onProgress, signal, provider));
+export async function pull(project, { restoreModified = false, onProgress, signal, provider, fromWorktrees = true } = {}) {
+  return withLock(project, restoreModified ? 'Restore' : 'Pull',
+    () => pullUnlocked(project, restoreModified, onProgress, signal, provider, fromWorktrees));
 }
 
-async function pullUnlocked(project, restoreModified, onProgress, signal, providerOverride) {
+async function pullUnlocked(project, restoreModified, onProgress, signal, providerOverride, fromWorktrees) {
   const { manifest, staged, cache } = openState(project);
   const result = newResult();
   if (manifest.files.length === 0) return result;
@@ -615,7 +623,10 @@ async function pullUnlocked(project, restoreModified, onProgress, signal, provid
     }
     if (targets.length === 0) return result;
 
-    const provider = providerOverride || createProvider(project);
+    // Created on first use: a pull served entirely from other worktrees
+    // never needs storage.
+    let provider = providerOverride || null;
+    const local = fromWorktrees ? new LocalSources(project) : null;
     fs.mkdirSync(project.tmpDir, { recursive: true });
     const groups = new Map();
     for (const t of targets) {
@@ -629,8 +640,24 @@ async function pullUnlocked(project, restoreModified, onProgress, signal, provid
       const first = group[0];
       const item = reporter.item(first.path, first.size);
       try {
-        await provider.downloadBlob(hash, tmpBlob, item.bytes, signal);
-        remote.add(hash);
+        let copied = false;
+        if (local && !local.empty) {
+          for (const src of local.candidates(hash, first.size, group.map((t) => t.path))) {
+            try {
+              await downloadVerified(fs.createReadStream(src), hash, tmpBlob, item.bytes, signal);
+              copied = true;
+              break;
+            } catch (e) {
+              if (isAbort(e)) throw e;
+              // changed since it was hashed, or gone: try the next one
+            }
+          }
+        }
+        if (!copied) {
+          if (!provider) provider = createProvider(project);
+          await provider.downloadBlob(hash, tmpBlob, item.bytes, signal);
+          remote.add(hash);
+        }
         for (const target of group) {
           const abs = project.abs(target.path);
           fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -642,7 +669,8 @@ async function pullUnlocked(project, restoreModified, onProgress, signal, provid
           cache.recordKnownFromDisk(target.path, abs, hash);
           cache.recordSynced(target.path, hash);
           staged.remove(target.path);
-          result.downloaded++;
+          if (copied) result.copiedLocal++;
+          else result.downloaded++;
         }
       } catch (e) {
         if (isAbort(e)) throw e;
